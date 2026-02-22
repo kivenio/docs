@@ -1,710 +1,200 @@
-# 📖 **Glossary**
-## *LOCAL-PLUS Platform Terminology*
+# Glossary
+## *Kiven Platform Terminology*
 
 ---
 
-> **Retour vers** : [Architecture Overview](EntrepriseArchitecture.md)
+> **Back to**: [Architecture Overview](EntrepriseArchitecture.md)
 
 ---
 
-# 🧩 **1. Core Software Architecture Terms**
+# 1. Kiven-Specific Terms
 
 | Term | Definition |
 |------|------------|
-| **Monolith** | Single deployable unit containing all application functionality |
-| **Microservices** | Architecture where application is composed of small, independent services |
-| **Service boundaries** | Clear interfaces and responsibilities defining where one service ends and another begins |
-| **Tight coupling** | Strong dependencies between components making them hard to change independently |
-| **Loose coupling** | Minimal dependencies between components allowing independent evolution |
-| **Cohesion** | Degree to which elements of a module belong together |
-| **Separation of concerns** | Design principle for separating a program into distinct sections |
-| **Scalability (vertical)** | Adding more power to existing machines (scale up) |
-| **Scalability (horizontal)** | Adding more machines to the pool (scale out) |
-| **Fault tolerance** | System's ability to continue operating when components fail |
-| **Resilience** | System's ability to recover from failures and continue to function |
-| **High availability** | System designed to be operational for a high percentage of time |
-| **Latency budget** | Maximum acceptable delay for an operation across the system |
-| **Throughput** | Number of operations a system can handle per unit of time |
-| **Concurrency** | Multiple computations executing during overlapping time periods |
-| **Rate limiting** | Controlling the rate of requests to protect system resources |
-| **Backpressure** | Mechanism to resist and control upstream load when overwhelmed |
-| **Stateless** | Component that doesn't retain client state between requests |
-| **Stateful** | Component that maintains state across requests |
-| **Idempotency** | Operation that produces same result regardless of how many times executed |
-| **Eventual consistency** | Data will become consistent across replicas given enough time |
-| **Strong consistency** | All nodes see the same data at the same time |
-| **CAP theorem** | Distributed system can only provide 2 of 3: Consistency, Availability, Partition tolerance |
-| **Data locality** | Keeping data close to where it's processed |
-| **ACID** | Atomicity, Consistency, Isolation, Durability — transaction guarantees |
-| **BASE** | Basically Available, Soft state, Eventually consistent — alternative to ACID |
-| **CQRS** | Command Query Responsibility Segregation — separate read and write models |
-| **Retry + Exponential backoff** | Retry failed operations with increasing delays |
-| **Circuit breaker** | Pattern to prevent cascading failures by failing fast |
-| **Bulkhead isolation** | Isolating components to prevent failure propagation |
-| **Canary deployment** | Gradual rollout to a subset of users before full deployment |
-| **Blue/Green deployment** | Two identical environments, switch traffic between them |
-| **Progressive delivery** | Gradual rollout with automated checks and rollback |
-| **Feature flags** | Toggles to enable/disable features without deployment |
+| **Kiven** | Managed data services platform. "Aiven, but on your Kubernetes infrastructure." Finnish for "stone" — solid ground for your database. |
+| **Kiven Agent** | Lightweight Go binary deployed in the customer's K8s cluster. Executes commands, collects metrics/logs, reports status to Kiven SaaS via gRPC/mTLS. |
+| **Kiven SaaS** | The management platform running in Kiven's AWS account (eu-west-1). Dashboard, API, core services. |
+| **Provider** | Plugin that implements the Kiven provider interface for a specific K8s operator (e.g., CNPG Provider, Strimzi Provider). |
+| **CNPG Provider** | The first Kiven provider. Manages PostgreSQL via the CloudNativePG operator. |
+| **Service Plan** | Predefined resource tier (Hobbyist, Startup, Business, Premium, Custom) that maps to EC2 instance type, storage, instances, and postgresql.conf tuning. |
+| **Power Off / Power On** | Feature to pause a database by deleting compute (nodes + pods) while retaining data (EBS volumes + S3 backups). Saves 60-70% on non-production environments. |
+| **Power Schedule** | Automated schedule for power on/off (e.g., Mon-Fri 8am-6pm). |
+| **Simple Mode** | Default dashboard UX for developers. Forms, sliders, buttons. No YAML visible. Like Aiven's UI. |
+| **Advanced Mode** | Dashboard UX for DevOps. View/edit YAML directly, diff view, change history, rollback. Like Lens for K8s. |
+| **svc-provisioner** | "The Brain" — core service that orchestrates full provisioning pipeline (nodes → storage → S3 → CNPG → PG). |
+| **svc-infra** | Service managing AWS resources in customer accounts (EC2 node groups, EBS, S3, IAM). |
+| **svc-agent-relay** | gRPC server that multiplexes connections from all customer agents. |
+| **svc-yamleditor** | Service powering Advanced Mode: YAML generation, validation, diff, change history. |
+| **DBA Intelligence** | Kiven's automated database expertise: performance tuning, query optimization, backup verification, capacity planning, security auditing, incident diagnostics. |
+| **Backup Verification** | Automated weekly restore test: spin up temporary CNPG cluster from latest backup, validate, tear down. Proves backups are restorable. |
+| **Prerequisites Engine** | Validates customer's K8s environment before provisioning (CNPG operator, storage classes, resources, cert-manager, etc.). |
+| **Customer Infrastructure** | AWS resources in the customer's account managed by Kiven: node groups, EBS volumes, S3 buckets, IAM roles. |
+| **Cross-Account IAM** | AWS IAM role in customer's account that trusts Kiven's account. Kiven assumes this role to manage customer resources. |
 
 ---
 
-# 🚢 **2. DevOps Core Concepts**
+# 2. CloudNativePG (CNPG) Terms
 
 | Term | Definition |
 |------|------------|
-| **CI/CD** | Continuous Integration / Continuous Delivery — automated build, test, deploy |
-| **Fail-Fast** | Design principle to detect and report failures immediately |
-| **Deployment pipeline** | Automated sequence of stages from code to production |
-| **GitOps** | Infrastructure and application management using Git as source of truth |
-| **Pull-based delivery** | Agents pull desired state from Git (vs push-based) |
-| **Infrastructure as Code (IaC)** | Managing infrastructure through code rather than manual processes |
-| **Configuration drift** | Divergence between actual and intended configuration state |
-| **Desired state vs actual state** | What should be vs what currently is |
-| **Convergence loop** | Process that continuously moves actual state toward desired state |
-| **Immutability** | Resources are replaced rather than modified |
-| **Artifact registry** | Repository for storing build artifacts (images, packages) |
-| **Environment parity** | Keeping dev, staging, prod as similar as possible |
-| **Supply chain security** | Protecting the software delivery pipeline from attacks |
-| **Build reproducibility** | Ability to recreate identical builds from same inputs |
-| **Trunk-based development** | All developers work on a single branch (main/trunk) |
-| **Shift left** | Moving testing and security earlier in the development process |
-| **Continuous compliance** | Automated compliance checks integrated into pipeline |
-| **Golden pipeline** | Standardized, pre-approved CI/CD pipeline |
-| **Self-service delivery** | Teams can deploy without manual intervention |
-| **Release automation** | Automated release process with minimal human intervention |
-| **Promotion** | Moving artifacts from one environment to the next |
+| **CloudNativePG (CNPG)** | CNCF Kubernetes operator for PostgreSQL. Manages cluster lifecycle, HA, backups, failover. |
+| **CNPG Cluster** | Custom Resource (CR) defining a PostgreSQL cluster: instances, storage, config, backups. |
+| **CNPG Pooler** | Custom Resource for PgBouncer connection pooling, managed by CNPG operator. |
+| **CNPG ScheduledBackup** | Custom Resource defining automated backup schedule (frequency, retention, S3 target). |
+| **Barman** | Backup tool used by CNPG for physical backups and WAL archiving to object storage (S3). |
+| **PITR (Point-in-Time Recovery)** | Ability to restore a database to any specific moment using base backup + WAL replay. |
+| **WAL (Write-Ahead Log)** | PostgreSQL's transaction log. Every change is written to WAL before data files. Used for replication and PITR. |
+| **Switchover** | Planned promotion of a replica to primary (graceful, zero data loss). |
+| **Failover** | Automatic promotion of a replica when primary fails (may lose last few transactions depending on replication mode). |
+| **Replication Lag** | Time delay between primary writing data and replica receiving it. |
+| **PVC (Persistent Volume Claim)** | Kubernetes resource requesting persistent storage (maps to EBS volume). |
+| **PVC Reclaim Policy** | What happens to the EBS volume when the PVC is deleted. `Retain` = keep the volume (critical for Power Off/On). |
 
 ---
 
-# 🛠️ **3. Platform Engineering Vocabulary**
+# 3. PostgreSQL Terms
 
 | Term | Definition |
 |------|------------|
-| **Paved road** | Recommended path that's easy to follow and well-supported |
-| **Golden path** | Opinionated, supported way to accomplish common tasks |
-| **Developer experience (DevEx)** | Quality of developers' interactions with tools and processes |
-| **Self-service portals** | Interfaces for teams to provision resources without tickets |
-| **Platform boundaries** | Clear interfaces between platform and application teams |
-| **Internal Developer Platform (IDP)** | Set of tools and services that enable self-service |
-| **Tenant isolation** | Separation of resources between different users/teams |
-| **Blast radius** | Scope of impact when something fails |
-| **Multi-tenancy** | Single instance serving multiple isolated tenants |
-| **Platform contracts** | Agreements about what the platform provides and expects |
-| **Declarative everything** | Describing what you want, not how to achieve it |
-| **Reconciliation loop** | Controller pattern that continuously aligns actual with desired state |
-| **Policy as Code** | Expressing policies in code for automated enforcement |
-| **Control plane vs data plane** | Management layer vs traffic/data processing layer |
-| **Standardization** | Consistent patterns across the organization |
-| **Opinionated defaults** | Pre-configured choices that work for most cases |
-| **Guardrails** | Constraints that guide without blocking |
-| **Drift detection** | Identifying when actual state differs from desired |
-| **Day-2 operations** | Ongoing operations after initial deployment |
-| **Platform lifecycle** | Stages from creation through deprecation |
-| **Operational excellence** | Running workloads effectively and gaining insights |
-| **Infra product thinking** | Treating infrastructure as a product with users |
+| **postgresql.conf** | Main PostgreSQL configuration file. Controls memory, connections, WAL, checkpoints, etc. |
+| **pg_hba.conf** | PostgreSQL Host-Based Authentication config. Controls who can connect and how. |
+| **shared_buffers** | RAM allocated for caching data pages. Typically 25% of total RAM. |
+| **work_mem** | RAM per query operation for sorting/hashing. Too low = spills to disk. |
+| **effective_cache_size** | Hint to query planner about available cache. Typically 75% of RAM. |
+| **max_connections** | Maximum concurrent connections. Should be sized with connection pooling. |
+| **PgBouncer** | PostgreSQL connection pooler. Reduces connection overhead. Modes: session, transaction, statement. |
+| **pg_stat_statements** | Extension tracking execution statistics of all SQL queries. |
+| **pg_stat_activity** | System view showing currently active queries and connections. |
+| **pg_stat_bgwriter** | System view for background writer and checkpoint statistics. |
+| **pg_stat_user_tables** | System view for table-level statistics (seq scans, idx scans, dead tuples). |
+| **Autovacuum** | Background process that reclaims dead tuples and updates statistics. |
+| **Bloat** | Wasted space from dead tuples that autovacuum hasn't reclaimed. |
+| **XID Wraparound** | PostgreSQL transaction ID limit (~2 billion). If reached, database freezes. Autovacuum prevents this. |
+| **EXPLAIN / EXPLAIN ANALYZE** | Commands showing query execution plan (estimated vs actual). |
+| **Sequential Scan** | Full table scan. Often indicates missing index. |
+| **Index Scan** | Targeted lookup using an index. Generally faster than seq scan. |
+| **Extensions** | PostgreSQL plugins: pg_vector (AI embeddings), PostGIS (geospatial), TimescaleDB (time-series), etc. |
 
 ---
 
-# 🐳 **4. Container & Kubernetes Terminology**
+# 4. AWS / Cloud Terms
 
 | Term | Definition |
 |------|------------|
-| **Control plane** | Components that manage the cluster (API server, scheduler, etc.) |
-| **Data plane** | Worker nodes where application workloads run |
-| **Pod** | Smallest deployable unit in Kubernetes, one or more containers |
-| **Deployment** | Declarative updates for Pods and ReplicaSets |
-| **StatefulSet** | Manages stateful applications with stable identities |
-| **DaemonSet** | Ensures a Pod runs on all (or some) nodes |
-| **Service** | Abstract way to expose an application running on Pods |
-| **Ingress** | API object managing external access to services |
-| **Gateway API** | Next-generation Ingress, more expressive routing |
-| **CRD (Custom Resource Definition)** | Extends Kubernetes API with custom resources |
-| **Operator** | Controller that manages complex applications using CRDs |
-| **Controller** | Control loop that watches state and makes changes |
-| **Reconciliation loop** | Controller pattern comparing desired vs actual state |
-| **Desired state store (etcd)** | Key-value store holding cluster state |
-| **Horizontal Pod Autoscaler** | Scales Pods based on CPU/memory or custom metrics |
-| **Vertical Pod Autoscaler** | Adjusts resource requests/limits automatically |
-| **KEDA** | Kubernetes Event-Driven Autoscaling |
-| **Knative** | Platform for serverless workloads on Kubernetes |
-| **Service mesh** | Infrastructure layer for service-to-service communication |
-| **Admission controller** | Intercepts requests before persistence |
-| **Mutating webhook** | Modifies resources during admission |
-| **Validating webhook** | Rejects invalid resources during admission |
-| **Secrets** | Objects for sensitive data (passwords, tokens) |
-| **ConfigMaps** | Objects for non-sensitive configuration data |
-| **Namespace tenancy** | Using namespaces to isolate workloads |
-| **Sidecar pattern** | Helper container running alongside main container |
-| **Init containers** | Containers that run before app containers start |
-| **Pod disruption budget** | Limits voluntary disruptions to Pods |
-| **Resource requests vs limits** | Minimum guaranteed vs maximum allowed resources |
-| **OOMKilled / throttling** | Container killed for memory / slowed for CPU |
-| **Node pool** | Group of nodes with same configuration |
-| **Taints/Tolerations** | Mechanism to repel/accept Pods on nodes |
-| **Affinity rules** | Scheduling preferences for Pod placement |
-| **kro** | Kubernetes Resource Orchestrator |
+| **EKS (Elastic Kubernetes Service)** | AWS managed Kubernetes service. |
+| **EBS (Elastic Block Store)** | AWS block storage for EC2. Volumes attached to K8s nodes for database data. |
+| **gp3** | EBS volume type. General purpose SSD with configurable IOPS and throughput. Default for Kiven. |
+| **S3 (Simple Storage Service)** | AWS object storage. Used for CNPG backups (Barman) and WAL archiving. |
+| **IRSA (IAM Roles for Service Accounts)** | AWS feature mapping K8s ServiceAccounts to IAM roles. CNPG uses IRSA to write backups to S3. |
+| **AssumeRole** | AWS IAM action to temporarily take on another role's permissions. Kiven assumes customer's `KivenAccessRole`. |
+| **Cross-Account Access** | Pattern where one AWS account accesses resources in another account via IAM role trust. |
+| **CloudFormation** | AWS IaC service. Kiven provides a CF template for customers to create the access role. |
+| **KMS (Key Management Service)** | AWS encryption key management. Used for EBS and S3 encryption. |
+| **Managed Node Group** | EKS feature for managed EC2 instances as K8s worker nodes. Kiven creates dedicated node groups for databases. |
+| **Taints** | K8s mechanism to repel pods from nodes. Kiven taints DB nodes so only DB pods run there. |
+| **Tolerations** | K8s mechanism allowing pods to schedule on tainted nodes. CNPG pods tolerate the database taint. |
+| **Multi-AZ** | Deploying across multiple Availability Zones for high availability. Kiven spreads primary/replicas across AZs. |
 
 ---
 
-# 🔄 **5. GitOps Deep Vocabulary**
+# 5. Kubernetes & Operator Terms
 
 | Term | Definition |
 |------|------------|
-| **Declarative manifests** | YAML/JSON files describing desired state |
-| **Single source of truth** | Git as the authoritative source for system state |
-| **Drift** | When actual state differs from Git-defined state |
-| **Convergence** | Process of moving actual state toward desired state |
-| **Pull reconciliation** | Agent pulls changes from Git (vs push deployment) |
-| **Progressive sync** | Gradual application of changes with health checks |
-| **Rollback via Git revert** | Undoing changes by reverting Git commits |
-| **Commit-driven deployments** | Deployments triggered by Git commits |
-| **Audit trail** | Git history as immutable record of all changes |
-| **Policy enforcement** | Automated checks before sync |
-| **Drift remediation** | Automatic correction of drift |
-| **Secret sealing** | Encrypting secrets for safe Git storage (ex: Sealed Secrets, pas SOPS) |
-| **Environments as branches** | Different branches for different environments |
-| **Kustomize overlays** | Environment-specific customizations |
+| **CRD (Custom Resource Definition)** | Extends K8s API with custom resources. CNPG adds Cluster, Backup, Pooler CRDs. |
+| **CR (Custom Resource)** | Instance of a CRD. A CNPG `Cluster` CR defines one PostgreSQL cluster. |
+| **Operator** | K8s controller that manages complex applications via CRDs. CNPG operator manages PostgreSQL. |
+| **Controller** | Control loop watching K8s resources and reconciling actual vs desired state. |
+| **Reconciliation Loop** | Continuous process comparing desired state (YAML) with actual state and making corrections. |
+| **client-go** | Official Go client library for Kubernetes API. Used by Kiven agent. |
+| **controller-runtime** | Go library for building K8s controllers/operators. Used by Kiven agent. |
+| **Informer** | K8s pattern for watching resource changes efficiently. Agent uses informers for CNPG CRDs. |
+| **Namespace** | K8s logical isolation. Kiven uses `kiven-system` (agent + operator) and `kiven-databases` (PG clusters). |
+| **NetworkPolicy** | K8s L3/L4 firewall rules. Kiven creates policies so only authorized app pods reach the database. |
+| **StorageClass** | K8s abstraction for dynamic storage provisioning. Kiven creates optimized storage classes for DB workloads. |
+| **Helm** | K8s package manager. Agent and CNPG operator are installed via Helm charts. |
 
 ---
 
-# ☁️ **6. Cloud Architecture Concepts**
+# 6. Communication & Protocol Terms
 
 | Term | Definition |
 |------|------------|
-| **Shared responsibility model** | Division of security responsibilities between cloud and customer |
-| **Multi-AZ** | Deployment across multiple Availability Zones |
-| **Multi-region** | Deployment across multiple geographic regions |
-| **Zonal vs regional resources** | Resources in one zone vs replicated across zones |
-| **Edge caching** | Caching content at edge locations near users |
-| **Network peering** | Direct network connection between VPCs |
-| **Private service connect** | Private connectivity to managed services |
-| **NAT gateway** | Network address translation for outbound traffic |
-| **Egress costs** | Charges for data leaving cloud provider |
-| **Ingress filtering** | Controlling inbound traffic |
-| **Cloud IAM** | Cloud Identity and Access Management |
-| **Workload identity federation** | Federating external identities with cloud IAM |
-| **Service accounts** | Identity for non-human principals |
-| **Service perimeter** | Boundary controlling access to resources |
-| **Threat modeling** | Systematic analysis of potential threats |
-| **Cloud Armor / WAF** | Web Application Firewall services |
-| **Autoscaling** | Automatic adjustment of resources based on demand |
-| **Rehydration** | Recreating immutable resources from scratch |
-| **Blue/Green infra provisioning** | Two environments for zero-downtime infrastructure changes |
-| **PAM** | Privileged Access Management |
+| **gRPC** | High-performance RPC framework by Google. Used for agent ↔ Kiven SaaS communication. |
+| **mTLS (Mutual TLS)** | Both client and server verify each other's certificates. Used for agent ↔ SaaS security. |
+| **Protobuf** | Protocol Buffers — binary serialization format for gRPC messages. |
+| **Bidirectional Streaming** | gRPC feature where both sides can send messages continuously. Agent streams metrics, SaaS streams commands. |
+| **Outbound-Only** | Agent initiates the connection to Kiven SaaS. No inbound ports needed on customer's firewall. |
 
 ---
 
-# 🔧 **7. Infrastructure as Code Vocabulary**
-
-## Terraform-specific
+# 7. Architecture & Software Terms
 
 | Term | Definition |
 |------|------------|
-| **Providers** | Plugins that interact with APIs (AWS, GCP, etc.) |
-| **Resources** | Infrastructure components managed by Terraform |
-| **Data sources** | Read-only queries to existing resources |
-| **Modules** | Reusable, encapsulated Terraform configurations |
-| **State** | Record of resources Terraform manages |
-| **State locking** | Preventing concurrent state modifications |
-| **Workspaces** | Separate state files for different environments |
-| **Drift** | Difference between state and actual infrastructure |
-| **Lifecycle ignore_changes** | Ignoring specific attribute changes |
-| **Outputs** | Values exported from modules |
-| **Variable validation** | Rules for valid variable values |
-| **Sentinel** | HashiCorp's policy as code framework |
-
-## Platform IaC
-
-| Term | Definition |
-|------|------------|
-| **Composability** | Building complex systems from simpler parts |
-| **Reusable patterns** | Standardized infrastructure blueprints |
-| **Module registries** | Centralized storage for shared modules |
-| **Abstraction leaks** | When implementation details break through abstractions |
-| **Snowflake infrastructure** | Unique, non-reproducible configurations |
+| **Provider Interface** | Go interface that each data service (CNPG, Strimzi, Redis) implements. Enables multi-operator support. |
+| **Plugin Architecture** | Design pattern where functionality is added via plugins without modifying core code. |
+| **GitOps** | Managing infrastructure and apps using Git as single source of truth. ArgoCD pulls from Git. |
+| **Infrastructure as Code (IaC)** | Managing infra through code (Terraform, CloudFormation) rather than manual processes. |
+| **Trunk-Based Development** | All developers merge to main branch. Short-lived feature branches. |
+| **C4 Model** | Architecture documentation: Context, Container, Component, Code diagrams. |
+| **Defense in Depth** | Multiple security layers so one breach doesn't compromise everything. |
+| **Zero Trust** | Never trust, always verify. Every request is authenticated and authorized. |
+| **RBAC (Role-Based Access Control)** | Permissions based on roles (Admin, Operator, Viewer). |
+| **OIDC (OpenID Connect)** | Identity protocol for SSO. Login with Google, GitHub, SAML. |
+| **Idempotency** | Operation producing the same result no matter how many times executed. Critical for agent commands. |
 
 ---
 
-# 🧮 **8. Observability (SRE Vocabulary)**
-
-## Three Pillars + Modern Additions
+# 8. Observability & Reliability Terms
 
 | Term | Definition |
 |------|------------|
-| **Logs** | Time-stamped records of discrete events |
-| **Metrics** | Numeric measurements aggregated over time |
-| **Traces** | Records of request paths through distributed systems |
-| **Profiles** | CPU/memory usage patterns over time |
-| **Events** | Significant occurrences in the system |
-| **Span attributes** | Metadata attached to trace spans |
-| **Telemetry pipelines** | Collection, processing, and routing of telemetry |
-
-## Methods & Signals
-
-| Term | Definition |
-|------|------------|
-| **RED metrics** | Rate, Errors, Duration — for services |
-| **USE method** | Utilization, Saturation, Errors — for resources |
-| **Golden signals** | Latency, Traffic, Errors, Saturation |
-| **Histogram buckets** | Distribution of values in ranges |
-| **Sampling** | Recording only a subset of data |
-| **Correlation IDs** | Identifiers linking related events |
-| **Distributed tracing** | Following requests across service boundaries |
-| **Log enrichment** | Adding context to log entries |
-| **Span propagation** | Passing trace context between services |
-| **Telemetry context** | Shared context for correlated telemetry |
-| **P50/P95/P99 Latency** | Percentile latency measurements |
-
-## Advanced Observability
-
-| Term | Definition |
-|------|------------|
-| **Cardinality** | Number of unique label combinations |
-| **Dimensionality** | Number of labels/attributes |
-| **Retention policies** | Rules for how long data is kept |
-| **Aggregation windows** | Time periods for aggregating data |
-| **Exemplars** | Links from metrics to specific traces |
-| **Structured logs (JSON)** | Machine-parseable log format |
-| **High-cardinality labels** | Labels with many unique values (avoid!) |
-| **Traceparent / tracestate** | W3C trace context headers |
-| **Baggage propagation** | Passing custom context through requests |
-| **Span links** | Connecting related but non-parent spans |
-| **Tail-based sampling** | Sampling based on complete trace |
-| **Head-based sampling** | Sampling decision at trace start |
-| **Adaptive sampling** | Dynamic sampling based on conditions |
-| **Context propagation** | Passing trace context between services |
-| **Semantic conventions** | OpenTelemetry standard naming |
-| **Continuous profiling** | Always-on performance profiling |
-| **Flamegraphs** | Visualization of call stacks and time |
-| **Log correlation** | Linking logs to traces and metrics |
-
-## Alerting & Incidents
-
-| Term | Definition |
-|------|------------|
-| **Alert fatigue** | Desensitization from too many alerts |
-| **Multi-window burn rates** | Error budget consumption over multiple time windows |
-| **Error budgets** | Allowable unreliability before action required |
-| **Burn-rate alerts** | Alerts based on error budget consumption speed |
-| **SLO/SLA/SLI** | Objective/Agreement/Indicator for service levels |
-| **Availability vs reliability** | Uptime vs consistent correct behavior |
-| **Thundering herd** | Many clients retrying simultaneously |
-| **Retry storms** | Cascading retries overwhelming systems |
-| **Cascading failures** | Failure spreading through dependencies |
-| **Deadman's switch** | Alert when expected signal is absent |
-| **Synthetic monitoring** | Artificial requests to test availability |
-| **Service dependency graphs** | Visualization of service relationships |
-| **Load shedding** | Dropping requests to protect system |
-| **Health probes** | Liveness, readiness, startup checks |
-| **Blameless postmortems** | Learning from incidents without blame |
-| **MTTR/MTTA/MTBF/MTTD** | Mean Time To Recovery/Acknowledge/Between Failures/Detect |
-| **Alert silencing** | Temporarily suppressing alerts |
-| **Dead-letter queues (DLQ)** | Queue for failed messages |
-| **Observability debt** | Accumulated lack of observability |
-
-## Prometheus Metric Types
-
-| Type | Description | Usage | Exemple |
-|------|-------------|-------|---------|
-| **Counter** | Valeur qui ne fait qu'augmenter (jamais diminuer) | Comptage d'événements cumulatifs | `http_requests_total`, `errors_total` |
-| **Gauge** | Valeur qui peut monter ET descendre | Valeurs instantanées | `temperature`, `queue_size`, `active_connections` |
-| **Histogram** | Distribution de valeurs dans des buckets prédéfinis | Latences, tailles de requêtes | `http_request_duration_seconds` |
-| **Summary** | Comme Histogram mais calcule les percentiles côté client | Percentiles précis (mais plus coûteux) | `request_latency` |
-
-### Counter vs Gauge
-
-```
-Counter (cumulatif):         Gauge (instantané):
-     ▲                            ▲
-  100│     ●                   50│  ●     ●
-   80│   ●                     40│    ●
-   60│  ●                      30│●     ●
-   40│ ●                       20│        ●
-   20│●                        10│
-     └────────►                  └────────►
-       time                        time
-```
-
-### Histogram Buckets
-
-```
-http_request_duration_seconds_bucket{le="0.1"}   → Requests < 100ms
-http_request_duration_seconds_bucket{le="0.5"}   → Requests < 500ms
-http_request_duration_seconds_bucket{le="1.0"}   → Requests < 1s
-http_request_duration_seconds_bucket{le="+Inf"}  → All requests (total)
-
-Calcul P99: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
-```
-
-### Quand utiliser quoi ?
-
-| Besoin | Type | Pourquoi |
-|--------|------|----------|
-| Comptage d'événements | Counter | Ne fait qu'augmenter, rate() pour débit |
-| Valeur actuelle | Gauge | Peut monter/descendre |
-| Latences (P50, P95, P99) | Histogram | Buckets permettent percentiles |
-| Taille de queue | Gauge | Valeur instantanée |
-| Nombre de requêtes | Counter | Cumulatif, rate() pour RPS |
+| **RPO (Recovery Point Objective)** | Maximum acceptable data loss in time. RPO 1h = can lose up to 1 hour of data. |
+| **RTO (Recovery Time Objective)** | Maximum acceptable downtime. RTO 15min = must recover within 15 minutes. |
+| **SLI (Service Level Indicator)** | Metric measuring service behavior (e.g., availability, latency). |
+| **SLO (Service Level Objective)** | Target for an SLI (e.g., 99.9% availability). |
+| **SLA (Service Level Agreement)** | Contractual commitment to SLO with consequences for breach. |
+| **Error Budget** | Allowable unreliability: 100% - SLO. 99.9% SLO = 43 min/month error budget. |
+| **Prometheus** | Time-series database for metrics. Collects from Kiven services and agents. |
+| **Loki** | Log aggregation system by Grafana. Stores and queries logs. |
+| **Tempo** | Distributed tracing system by Grafana. Traces requests across services. |
+| **OpenTelemetry (OTel)** | Standard for telemetry (metrics, logs, traces) collection and export. |
+| **Chaos Engineering** | Deliberately injecting failures to test system resilience. |
 
 ---
 
-# 🔥 **9. Reliability Engineering Vocabulary**
+# 9. Business & Compliance Terms
 
 | Term | Definition |
 |------|------------|
-| **SLO (Service Level Objective)** | Target reliability level |
-| **SLI (Service Level Indicator)** | Metric measuring service behavior |
-| **SLA (Service Level Agreement)** | Contractual reliability commitment |
-| **Error budget** | Allowable unreliability (100% - SLO) |
-| **Budget burn** | Rate of error budget consumption |
-| **Reliability targets** | Goals for system reliability |
-| **Failure domains** | Scope where failures are isolated |
-| **Blast radius** | Impact area of a failure |
-| **Incident commander** | Person coordinating incident response |
-| **Postmortem (blameless)** | Analysis of incidents without blame |
-| **MTTR** | Mean Time To Recovery |
-| **MTTD** | Mean Time To Detection |
-| **MTTF** | Mean Time To Failure |
-| **Runbook** | Step-by-step guide for operational tasks |
-| **Playbook** | Guide for responding to specific scenarios |
-| **On-call rotation** | Schedule for incident response duty |
-| **Escalation path** | Chain for escalating issues |
-| **Severity levels** | Categories of incident impact (SEV-1, SEV-2...) |
+| **GDPR** | EU General Data Protection Regulation. Requires data residency, consent, right to erasure. |
+| **SOC2** | Security framework requiring audit controls, RBAC, monitoring, incident response. |
+| **Data Sovereignty** | Data stored and processed within specific geographic boundaries. Kiven's model ensures this — data stays in customer's VPC. |
+| **Vendor Lock-In** | Dependency on a specific vendor. Kiven reduces lock-in: customer owns their K8s infra, CNPG is open-source. |
+| **DBaaS (Database-as-a-Service)** | Fully managed database. Aiven and Kiven are both DBaaS, but with different infrastructure models. |
+| **BYOC (Bring Your Own Cloud)** | Model where the managed service runs on the customer's cloud account. Kiven's core model. |
+| **Stripe** | Payment platform for SaaS billing. Kiven uses Stripe for subscription management. |
 
 ---
 
-# 🔐 **10. Security Terminology**
-
-| Term | Definition |
-|------|------------|
-| **Zero Trust** | Never trust, always verify |
-| **Principle of least privilege** | Grant minimum necessary access |
-| **RBAC** | Role-Based Access Control |
-| **ABAC** | Attribute-Based Access Control |
-| **Ephemeral credentials** | Short-lived, automatically rotated credentials |
-| **Dynamic secrets** | Secrets generated on-demand with TTL |
-| **Secret rotation** | Regular replacement of credentials |
-| **Time-bound access** | Access that expires automatically |
-| **Vault Agent** | Sidecar for secret injection |
-| **Token minting** | Creating authentication tokens |
-| **Policy boundaries** | Limits on what policies can grant |
-| **Just-in-time access** | Access granted only when needed |
-| **SBOM** | Software Bill of Materials |
-| **Supply chain attacks** | Compromising software delivery pipeline |
-| **Secret scanning** | Detecting exposed credentials |
-| **Threat modeling** | Systematic security analysis |
-| **Attack surface** | All points where attacker could enter |
-| **Posture management** | Continuous security state assessment |
-| **Vulnerability hygiene** | Keeping systems patched and secure |
-
----
-
-# 🧵 **11. Networking Vocabulary**
-
-## Core Networking
-
-| Term | Definition |
-|------|------------|
-| **CIDR** | Classless Inter-Domain Routing notation |
-| **Subnets** | Logical subdivisions of a network |
-| **VPC peering** | Direct connection between VPCs |
-| **VPC Service Controls** | Perimeter around GCP resources |
-| **Route table** | Rules for directing network traffic |
-| **NAT gateway** | Network Address Translation for outbound traffic |
-| **Public vs private subnet** | Internet-accessible vs internal-only |
-| **Load balancer (L4 vs L7)** | Transport vs application layer balancing |
-| **Reverse proxy** | Proxy that handles client requests for backend servers |
-| **TLS termination** | Decrypting TLS at a proxy/load balancer |
-| **mTLS** | Mutual TLS — both sides authenticate |
-| **VPN tunnels** | Encrypted connections over public networks |
-| **Egress control** | Controlling outbound traffic |
-| **DNS resolution** | Translating names to IP addresses |
-| **Split-horizon DNS** | Different DNS responses internal vs external |
-| **Service discovery** | Finding service endpoints dynamically |
-| **Latency vs jitter** | Delay vs variation in delay |
-
-## Network Security
-
-| Term | Definition |
-|------|------------|
-| **Network ACLs** | Stateless firewall rules for subnets |
-| **Security groups** | Stateful firewall rules for instances |
-| **Firewall rules** | Rules controlling network traffic |
-| **Ingress vs egress** | Inbound vs outbound traffic |
-| **East-west vs north-south** | Internal vs external traffic |
-| **Overlay networks** | Virtual networks on top of physical |
-| **Underlay networks** | Physical network infrastructure |
-| **Zero trust networking** | Verify every request regardless of source |
-| **Network segmentation** | Dividing network into zones |
-| **Micro-segmentation** | Fine-grained network isolation |
-
-## DNS
-
-| Term | Definition |
-|------|------------|
-| **DNS TTL** | Time-To-Live for DNS records |
-| **DNS cache poisoning** | Attack corrupting DNS cache |
-| **Anycast vs unicast** | Same IP multiple locations vs single location |
-| **GSLB** | Global Server Load Balancing |
-| **CNAMES vs ANAMEs** | Canonical names vs ALIAS records |
-| **DNS SRV records** | Service location records |
-| **Weighted DNS records** | Traffic distribution via DNS |
-| **DNS failover** | Automatic DNS-based failover |
-
-## Load Balancing
-
-| Term | Definition |
-|------|------------|
-| **Round robin** | Distributing requests in rotation |
-| **Least connections** | Sending to server with fewest connections |
-| **Weighted** | Distribution based on server capacity |
-| **IP hash** | Consistent routing based on client IP |
-| **Sticky sessions** | Routing same client to same server |
-| **Connection draining** | Completing requests before removing server |
-| **Health checks (active/passive)** | Probing vs observing server health |
-
-## Advanced Networking
-
-| Term | Definition |
-|------|------------|
-| **Service mesh** | Infrastructure for service communication |
-| **Sidecar proxy (Envoy)** | Proxy container alongside application |
-| **Policy-based routing** | Routing based on policies not just destination |
-| **BGP** | Border Gateway Protocol |
-| **ASN** | Autonomous System Number |
-| **Peering vs transit** | Direct connection vs paying for routing |
-| **PrivateLink / VPC Endpoints** | Private connectivity to services |
-| **MTU** | Maximum Transmission Unit |
-| **QoS** | Quality of Service |
-| **Bandwidth vs throughput** | Capacity vs actual data transfer rate |
-
-## Kubernetes Networking
-
-| Term | Definition |
-|------|------------|
-| **kube-proxy** | Network proxy on each node |
-| **ClusterIP** | Internal-only service IP |
-| **NodePort** | Service exposed on node ports |
-| **LoadBalancer service** | Service with external load balancer |
-| **Ingress controller** | Implementation of Ingress API |
-| **Gateway API** | Next-generation ingress specification |
-| **NetworkPolicies** | L3/L4 firewall for pods |
-| **PodCIDR** | IP range allocated to pods |
-| **CNI** | Container Network Interface |
-| **Calico / Cilium** | Popular CNI implementations |
-| **Pod-to-pod encryption** | Encrypting traffic between pods |
-
----
-
-# 🗄️ **12. Database Reliability Vocabulary**
-
-| Term | Definition |
-|------|------------|
-| **RPO/RTO** | Recovery Point/Time Objective |
-| **Replication lag** | Delay between primary and replica |
-| **Write amplification** | Extra writes from indexing/replication |
-| **Connection pooling** | Reusing database connections |
-| **Hot standby** | Replica ready for immediate failover |
-| **Warm standby** | Replica needing some preparation |
-| **Cold failover** | Failover requiring significant setup |
-| **Partitioning (sharding)** | Splitting data across databases |
-| **Read replicas** | Copies for read-only queries |
-| **Transaction boundaries** | Scope of ACID guarantees |
-| **Isolation levels** | Degree of transaction isolation |
-| **Backfill** | Populating data retroactively |
-| **pg_bouncer** | PostgreSQL connection pooler |
-| **Vacuum** | PostgreSQL maintenance for dead tuples |
-| **Dead tuple accumulation** | Buildup of deleted row versions |
-| **Failover election** | Process of choosing new primary |
-
----
-
-# ✅ **13. Platform Anti-Patterns**
-
-| Anti-Pattern | Description |
-|--------------|-------------|
-| **Configuration drift** | Actual state diverging from intended |
-| **Snowflake servers** | Unique, non-reproducible configurations |
-| **Tight coupling** | Components that can't change independently |
-| **Hidden dependencies** | Undocumented relationships between systems |
-| **Mutating production manually** | Direct changes bypassing automation |
-| **Silent failure** | Failures without alerts or logs |
-| **Shadow ops** | Unofficial processes outside standard tooling |
-| **Orphan secrets** | Unused but still valid credentials |
-| **Credential sprawl** | Credentials scattered across systems |
-| **Static long-lived passwords** | Credentials that never expire |
-| **Single-tenant-by-accident** | Unintended tight coupling to one tenant |
-
----
-
-# 🧠 **14. Architecture Trade-Off Terminology**
-
-| Trade-Off | Description |
-|-----------|-------------|
-| **Latency vs throughput** | Response time vs capacity |
-| **Cost vs durability** | Expense vs data safety |
-| **Consistency vs availability** | Data correctness vs uptime |
-| **Security vs convenience** | Protection vs ease of use |
-| **Performance vs maintainability** | Speed vs code clarity |
-| **Complexity vs control** | Features vs simplicity |
-| **Abstraction leakage** | When implementation details break through abstractions |
-
----
-
-# 🎛️ **15. Control Plane Vocabulary**
-
-| Term | Definition |
-|------|------------|
-| **Declarative specification** | Describing what you want, not how |
-| **Controller manager** | Component running controllers |
-| **Watch loops** | Controllers watching for changes |
-| **Reconciliation** | Aligning actual with desired state |
-| **Drift remediation** | Correcting drift automatically |
-| **Desired state store** | Where desired state is persisted |
-| **Operator SDK** | Framework for building operators |
-| **Custom resources** | User-defined Kubernetes resources |
-
----
-
-# 🐍 **16. FastAPI Vocabulary**
-
-## FastAPI Core
-
-| Term | Definition |
-|------|------------|
-| **Path operations** | HTTP method + path combinations |
-| **Path operation function** | Function handling a path operation |
-| **Dependency injection** | Automatic provision of dependencies |
-| **Dependencies (Depends)** | FastAPI's DI mechanism |
-| **Request state** | Data attached to request lifecycle |
-| **Background tasks** | Tasks executed after response |
-| **Middleware** | Code running before/after requests |
-| **Routers** | Grouping of path operations |
-| **Sub-applications** | Mounting apps within apps |
-| **Exception handlers** | Custom error handling |
-| **Response models** | Pydantic models for responses |
-| **Startup/shutdown events** | Lifecycle hooks |
-| **Lifespan protocol** | Modern async context manager for lifecycle |
-| **OpenAPI schema generation** | Automatic API documentation |
-
-## Pydantic
-
-| Term | Definition |
-|------|------------|
-| **BaseModel** | Base class for data models |
-| **Field validators** | Validation functions for fields |
-| **Model config** | Configuration for model behavior |
-| **Strict types** | Types that don't coerce |
-| **Alias generation** | Automatic field name aliases |
-| **Model inheritance** | Extending models |
-| **ORM mode** | Compatibility with ORM objects |
-
-## Async/Concurrency
-
-| Term | Definition |
-|------|------------|
-| **Event loop** | Core of async execution |
-| **Coroutine** | Async function |
-| **Context switching** | Switching between coroutines |
-| **Async DB engines** | Non-blocking database drivers |
-
-## API Integration
-
-| Term | Definition |
-|------|------------|
-| **Clients (httpx)** | Async HTTP client library |
-| **Session reuse** | Reusing HTTP connections |
-| **Circuit breakers** | Preventing cascading failures |
-| **Retries with jitter** | Randomized retry timing |
-| **Backoff** | Increasing delay between retries |
-| **Timeout budgets** | Allocating latency across operations |
-
----
-
-# 🤖 **17. Modern AI Platform Terms**
-
-| Term | Definition |
-|------|------------|
-| **RAG** | Retrieval-Augmented Generation |
-| **Vector embeddings** | Numerical representations of content |
-| **Chunking strategies** | Methods for splitting documents |
-| **Hallucination rate** | Frequency of incorrect AI outputs |
-| **Prompt injection** | Attack via malicious prompts |
-| **Safety guardrails** | Controls preventing harmful outputs |
-| **Structured tool calling** | AI invoking tools with typed parameters |
-| **Agent orchestration** | Managing multi-step AI workflows |
-| **Agent handoff** | Transferring between specialized agents |
-| **Latency budget (LLM)** | Acceptable delay for AI responses |
-| **Function calling** | AI calling predefined functions |
-| **Streaming response** | Incremental output delivery |
-| **Semantic caching** | Caching based on meaning similarity |
-| **Evaluation metrics (RAGAS)** | Framework for RAG evaluation |
-| **Tracing (Langfuse)** | Observability for LLM applications |
-| **Observability of prompts** | Tracking prompt performance |
-| **Agentic** | AI that can take autonomous actions |
-| **vLLM** | High-performance LLM inference engine |
-
----
-
-# 🧱 **18. How to Use These Terms**
+# 10. How to Use These Terms
 
 ## In PR Reviews
+- *"This increases blast radius for customer data"*
+- *"We need idempotency on this agent command"*
+- *"Check the PVC reclaim policy — must be Retain for power off"*
 
-- *"This increases blast radius"*
-- *"We risk configuration drift here"*
-- *"Can we enforce immutability?"*
-- *"Retries need idempotency guarantees"*
+## In Customer Conversations
+- *"Your data never leaves your VPC"*
+- *"You can power off dev databases on weekends to save 70%"*
+- *"Our DBA intelligence will auto-tune your postgresql.conf"*
 
-## In Meetings
-
-- *"What's the rollback path?"*
-- *"What's our boundary for tenant isolation?"*
-
-## In Documentation
-
-- *"We apply progressive delivery to reduce risk"*
+## In Architecture Decisions
+- *"We need cross-account IAM for svc-infra to manage customer node groups"*
+- *"The provider interface must be stable before we add Strimzi support"*
 
 ---
 
-# 📚 **19. Learning Practice**
-
-For any term, ask:
-
-1. **Define** — What is it?
-2. **When to use** — Appropriate scenarios
-3. **When NOT to use** — Anti-patterns
-4. **Trade-offs** — What you gain/lose
-5. **Real-world example** — Concrete usage
-6. **Sentence** — How to use it naturally
-
----
-
-# 🌿 **20. Git Vocabulary**
-
-| Term | Definition |
-|------|------------|
-| **Cherry-pick** | Apply specific commits to another branch |
-| **Backport** | Apply fix from newer to older version |
-| **Forwardport** | Apply fix from older to newer version |
-
----
-
-# 📨 **21. Messaging & Event-Driven Systems**
-
-| Term | Definition |
-|------|------------|
-| **Outbox Pattern** | Writing events to DB table, then to message broker atomically |
-| **Event sourcing** | Storing events as source of truth |
-| **CDC (Change Data Capture)** | Capturing database changes as events |
-| **Exactly-once semantics** | Guarantee of processing exactly once |
-| **At-least-once delivery** | Guarantee of delivery (may have duplicates) |
-| **Consumer group** | Group of consumers sharing workload |
-| **Partition** | Ordered subset of topic messages |
-| **Dead Letter Queue (DLQ)** | Queue for failed messages |
-| **Saga pattern** | Distributed transaction via event choreography |
-| **Compensating transaction** | Undoing previous transaction on failure |
-
----
-
-*Document maintenu par : Platform Team*  
-*Dernière mise à jour : Janvier 2026*
+*Maintained by: Platform Team*
+*Last updated: February 2026*

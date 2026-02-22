@@ -1,478 +1,297 @@
-# 💾 **Data Architecture**
-## *LOCAL-PLUS Database, Kafka, Cache & Queues*
+# Data Architecture
+## *Kiven — Product Database, Kafka, Cache & Customer Database Model*
 
 ---
 
-> **Retour vers** : [Architecture Overview](../EntrepriseArchitecture.md)
+> **Back to**: [Architecture Overview](../EntrepriseArchitecture.md)
 
 ---
 
-# 📋 **Table of Contents**
+# Table of Contents
 
-1. [Aiven Configuration](#aiven-configuration)
-2. [Database Strategy](#database-strategy)
-3. [Schema Ownership](#schema-ownership)
+1. [Two Data Domains](#two-data-domains)
+2. [Kiven Product Database (SaaS)](#kiven-product-database-saas)
+3. [Customer Databases (Managed by Kiven)](#customer-databases-managed-by-kiven)
 4. [Kafka Topics](#kafka-topics)
-5. [Kafka Monitoring](#kafka-monitoring)
-6. [Cache Architecture (Valkey)](#cache-architecture-valkey)
-7. [Queueing & Background Jobs](#queueing--background-jobs)
+5. [Cache Architecture (Valkey)](#cache-architecture-valkey)
+6. [Data Isolation Principle](#data-isolation-principle)
 
 ---
 
-# 🗄️ **Aiven Configuration**
+# Two Data Domains
 
-## Services Overview
+Kiven has **two completely separate data domains** that must never mix:
 
-| Service | Plan | Config | Coût estimé |
-|---------|------|--------|-------------|
-| **PostgreSQL** | Business-4 | Primary + Read Replica, 100GB | ~300€/mois |
-| **Kafka** | Business-4 | 3 brokers, 100GB retention | ~400€/mois |
-| **Valkey (Redis)** | Business-4 | 2 nodes, 10GB, HA | ~150€/mois |
+```
+┌─────────────────────────────────────┐  ┌─────────────────────────────────────┐
+│  DOMAIN 1: Kiven Product Data       │  │  DOMAIN 2: Customer Database Data   │
+│  (lives in Kiven's AWS account)     │  │  (lives in customer's AWS account)  │
+│                                     │  │                                     │
+│  PostgreSQL (Aiven) — product DB    │  │  PostgreSQL (CNPG on customer EKS)  │
+│  Kafka (Aiven) — events             │  │  Barman backups → customer's S3     │
+│  Valkey (Aiven) — cache             │  │                                     │
+│                                     │  │  Kiven NEVER accesses row data.     │
+│  Contains: orgs, users, clusters,   │  │  Agent collects only: pg_stat_*,   │
+│  billing, audit, agent metadata     │  │  logs, CRD status, metrics.         │
+└─────────────────────────────────────┘  └─────────────────────────────────────┘
+```
 
-**Coût total Aiven estimé : ~850€/mois**
+**Golden rule: Customer data never touches Kiven's infrastructure.**
 
 ---
 
-# 🐘 **Database Strategy**
+# Kiven Product Database (SaaS)
 
-## Configuration
+## Aiven Configuration
 
-| Aspect | Choix | Rationale |
-|--------|-------|-----------|
-| **Replication** | Aiven managed (async) | RPO 1h acceptable |
+| Service | Plan | Config | Estimated Cost |
+|---------|------|--------|----------------|
+| **PostgreSQL** | Business-4 | Primary + Read Replica, 100GB | ~300 EUR/mo |
+| **Kafka** | Business-4 | 3 brokers, 100GB retention | ~400 EUR/mo |
+| **Valkey** | Business-4 | 2 nodes, 10GB, HA | ~150 EUR/mo |
+
+**Total estimated Aiven cost: ~850 EUR/mo**
+
+## Database Configuration
+
+| Aspect | Choice | Rationale |
+|--------|--------|-----------|
+| **Replication** | Aiven managed (async) | RPO 1h acceptable for product DB |
 | **Backup** | Aiven automated hourly | RPO 1h |
 | **Failover** | Aiven automated | RTO < 15min |
-| **Connection** | VPC Peering (private) | PCI-DSS, no public internet |
+| **Connection** | VPC Peering (private) | No public internet |
 | **Pooling** | PgBouncer (Aiven built-in) | Connection efficiency |
+
+## Schema Ownership
+
+### Core Tables
+
+| Table | Owner Service | Description |
+|-------|---------------|-------------|
+| `organizations` | svc-auth | Customer organizations |
+| `users` | svc-auth | Dashboard users, roles, teams |
+| `api_keys` | svc-auth | API key management |
+| `clusters` | svc-clusters | Managed CNPG cluster metadata |
+| `cluster_configs` | svc-yamleditor | YAML history, versions, diffs |
+| `databases` | svc-users | PostgreSQL databases within clusters |
+| `database_users` | svc-users | PostgreSQL roles within clusters |
+| `backups` | svc-backups | Backup records, status, PITR points |
+| `backup_verifications` | svc-backups | Restore test results |
+| `agents` | svc-agent-relay | Registered agents, heartbeat status |
+| `provisioning_jobs` | svc-provisioner | Provisioning pipeline state machine |
+| `infra_resources` | svc-infra | Customer AWS resources (node groups, EBS, S3, IAM) |
+| `service_plans` | svc-clusters | Plan definitions (Hobbyist, Startup, Business...) |
+| `metrics_snapshots` | svc-monitoring | Aggregated metrics for dashboard display |
+| `alerts` | svc-monitoring | Alert rules and status |
+| `dba_recommendations` | svc-monitoring | Performance advisor suggestions |
+| `audit_log` | svc-audit | Immutable audit trail |
+| `billing_subscriptions` | svc-billing | Stripe subscriptions, usage |
+| `invoices` | svc-billing | Invoice records |
+| `migrations` | svc-migrations | Migration jobs (from Aiven/RDS) |
+
+### Power Schedule Tables
+
+| Table | Owner Service | Description |
+|-------|---------------|-------------|
+| `power_schedules` | svc-clusters | Scheduled power on/off rules |
+| `power_events` | svc-clusters | Power on/off event history |
+
+**Rule: 1 table = 1 owner. Cross-service communication = gRPC or Kafka events, never JOINs.**
 
 ## Connection Best Practices
 
-| Paramètre | Valeur recommandée | Rationale |
+| Parameter | Recommended Value | Rationale |
 |-----------|-------------------|-----------|
-| **pool_size** | 20 | Nombre de connexions par pod |
-| **max_overflow** | 10 | Connexions supplémentaires en pic |
-| **pool_timeout** | 30s | Attente max pour une connexion |
-| **pool_recycle** | 1800s | Recycler connexions toutes les 30min |
-| **ssl** | require | Obligatoire pour PCI-DSS |
+| **pool_size** | 20 | Connections per service pod |
+| **max_overflow** | 10 | Extra connections at peak |
+| **pool_timeout** | 30s | Max wait for connection |
+| **pool_recycle** | 1800s | Recycle connections every 30min |
+| **ssl** | require | Always encrypted |
 
 ---
 
-# 📊 **Schema Ownership**
+# Customer Databases (Managed by Kiven)
 
-| Table | Owner Service | Access pattern |
-|-------|---------------|----------------|
-| `transactions` | svc-ledger | CRUD |
-| `ledger_entries` | svc-ledger | CRUD |
-| `wallets` | svc-wallet | CRUD |
-| `balance_snapshots` | svc-wallet | CRUD |
-| `merchants` | svc-merchant | CRUD |
-| `giftcards` | svc-giftcard | CRUD |
+## What Kiven Provisions
 
-**Règle d'or : 1 table = 1 owner. Cross-service = gRPC ou Events, jamais JOIN.**
+For each customer database, Kiven creates:
+
+| Resource | Type | Where | Managed By |
+|----------|------|-------|------------|
+| CNPG Cluster CR | Kubernetes CRD | Customer K8s | Kiven agent |
+| PostgreSQL pods | Pods (Primary + Replicas) | Customer K8s | CNPG operator |
+| PgBouncer Pooler | Kubernetes CRD | Customer K8s | CNPG operator |
+| EBS volumes | AWS EBS gp3 | Customer AWS | Kiven svc-infra |
+| S3 backup bucket | AWS S3 | Customer AWS | Kiven svc-infra |
+| IRSA role | AWS IAM | Customer AWS | Kiven svc-infra |
+| ScheduledBackup CR | Kubernetes CRD | Customer K8s | Kiven agent |
+| NetworkPolicy | Kubernetes | Customer K8s | Kiven agent |
+
+## Service Plan → Infrastructure Mapping
+
+| Plan | Node Type | Instances | Storage | Backup Freq | PgBouncer Pool |
+|------|-----------|-----------|---------|-------------|----------------|
+| **Hobbyist** | t3.small | 1 | 10GB gp3 | Daily | 25 |
+| **Startup** | r6g.medium | 2 | 50GB gp3 | 6h | 50 |
+| **Business** | r6g.large | 3 | 100GB gp3 (3000 IOPS) | 1h | 100 |
+| **Premium** | r6g.xlarge | 3 | 500GB gp3 (6000 IOPS) | 30min | 200 |
+| **Custom** | Any | 1-5 | Custom | Custom | Custom |
+
+## Auto-Tuned postgresql.conf per Plan
+
+| Parameter | Hobbyist | Startup | Business | Premium |
+|-----------|----------|---------|----------|---------|
+| `shared_buffers` | 256MB | 1GB | 4GB | 8GB |
+| `effective_cache_size` | 768MB | 3GB | 12GB | 24GB |
+| `work_mem` | 4MB | 16MB | 32MB | 64MB |
+| `maintenance_work_mem` | 64MB | 256MB | 512MB | 1GB |
+| `max_connections` | 50 | 100 | 200 | 400 |
+| `wal_buffers` | 8MB | 16MB | 32MB | 64MB |
+| `random_page_cost` | 1.1 | 1.1 | 1.1 | 1.1 |
+| `effective_io_concurrency` | 200 | 200 | 200 | 200 |
+| `checkpoint_completion_target` | 0.9 | 0.9 | 0.9 | 0.9 |
+
+These values are the **defaults per plan**. The DBA intelligence engine adjusts them based on real workload over time.
+
+## What Kiven Collects (Metadata Only — Never Row Data)
+
+| Data Collected | Source | Purpose | Contains PII? |
+|----------------|--------|---------|---------------|
+| `pg_stat_statements` | PG catalog | Query performance analysis | No (queries anonymized) |
+| `pg_stat_activity` | PG catalog | Active connections, blocking | No |
+| `pg_stat_bgwriter` | PG catalog | Checkpoint/write performance | No |
+| `pg_stat_user_tables` | PG catalog | Table size, seq/idx scans | No |
+| CNPG Cluster status | K8s CRD | Cluster health, replication lag | No |
+| Pod metrics | Kubelet | CPU, memory, disk usage | No |
+| PG logs | Pod logs | Error detection, slow queries | Potentially (log scrubbing applied) |
+| Node status | K8s API | Node health, capacity | No |
+| EBS metrics | CloudWatch | Disk IOPS, latency | No |
+
+**Log scrubbing**: The agent strips potential PII from PG logs before sending to Kiven (query parameter values replaced with `$N`).
 
 ---
 
-# 📨 **Kafka Topics**
+# Kafka Topics
 
 ## Topic Configuration
 
-| Topic | Producer | Consumers | Retention |
-|-------|----------|-----------|-----------|
-| `ledger.transactions.v1` | svc-ledger (Outbox) | svc-notification, svc-analytics | 7 jours |
-| `wallet.balance-updated.v1` | svc-wallet | svc-analytics | 7 jours |
-| `merchant.onboarded.v1` | svc-merchant | svc-notification | 7 jours |
+| Topic | Producer | Consumers | Retention | Purpose |
+|-------|----------|-----------|-----------|---------|
+| `agent.status.v1` | Agent (via relay) | svc-clusters, svc-monitoring | 7 days | Cluster status updates |
+| `agent.metrics.v1` | Agent (via relay) | svc-monitoring | 3 days | PG metrics stream |
+| `agent.logs.v1` | Agent (via relay) | svc-monitoring | 3 days | PG log stream |
+| `agent.events.v1` | Agent (via relay) | svc-clusters, svc-notification | 7 days | Failover, backup, error events |
+| `provisioning.commands.v1` | svc-provisioner | Agent (via relay) | 1 day | Commands to execute in customer K8s |
+| `provisioning.status.v1` | svc-provisioner | svc-api, dashboard | 7 days | Provisioning pipeline progress |
+| `audit.actions.v1` | All services | svc-audit | 30 days | Immutable audit trail |
+| `billing.usage.v1` | svc-monitoring | svc-billing | 30 days | Per-cluster usage metrics |
+| `alerts.triggered.v1` | svc-monitoring | svc-notification | 7 days | Alert events for dispatch |
+| `dba.recommendations.v1` | svc-monitoring | svc-api, dashboard | 7 days | DBA intelligence suggestions |
 
-## Outbox Pattern avec Debezium
-
-> **Implementation** : On utilise **Debezium** avec **PostgreSQL Logical Replication** (publication + replication slot), pas le polling.
+## Topic Naming Convention
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    OUTBOX PATTERN (Debezium CDC)                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. Application writes to DB + Outbox table in same transaction             │
-│  2. Debezium reads WAL via replication slot                                 │
-│  3. Events published to Kafka                                               │
-│  4. Consumers process events                                                │
-│                                                                              │
-│  ┌─────────┐    ┌─────────────┐    ┌──────────┐    ┌─────────────┐         │
-│  │ svc-*   │───►│ PostgreSQL  │───►│ Debezium │───►│   Kafka     │         │
-│  │         │    │ (WAL/Slot)  │    │  (CDC)   │    │             │         │
-│  └─────────┘    └─────────────┘    └──────────┘    └──────┬──────┘         │
-│                                                           │                 │
-│                 Publication + Replication Slot            ▼                 │
-│                                                  ┌─────────────────┐        │
-│                                                  │   Consumers     │        │
-│                                                  └─────────────────┘        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+{domain}.{entity}.{version}
+
+Examples:
+  agent.status.v1
+  provisioning.commands.v1
+  audit.actions.v1
 ```
 
-## Debezium Configuration
+## Kafka Monitoring
 
-| Composant | Description |
-|-----------|-------------|
-| **Publication** | `CREATE PUBLICATION outbox_pub FOR TABLE outbox;` |
-| **Replication Slot** | Créé automatiquement par Debezium |
-| **Connector** | Debezium PostgreSQL Connector |
-| **Output** | Kafka topic par table (ou SMT pour routing) |
-
-## Outbox Table Structure
-
-| Colonne | Type | Description |
-|---------|------|-------------|
-| `id` | UUID | Primary key |
-| `aggregate_type` | VARCHAR(255) | Type d'entité (Transaction, Wallet...) |
-| `aggregate_id` | VARCHAR(255) | ID de l'entité |
-| `event_type` | VARCHAR(255) | Type d'événement |
-| `payload` | JSONB | Données de l'événement |
-| `created_at` | TIMESTAMPTZ | Timestamp création |
+| Metric | Alert Threshold | Severity |
+|--------|----------------|----------|
+| **Consumer Lag** | > 1000 messages | P2 |
+| **Under-replicated Partitions** | > 0 | P1 |
+| **Active Controller Count** | != 1 | P1 |
+| **Offline Partitions** | > 0 | P1 |
+| **Request Latency P99** | > 100ms | P2 |
 
 ---
 
-# 📊 **Kafka Monitoring**
+# Cache Architecture (Valkey)
 
-## Métriques Essentielles
+## Cache Stack
 
-| Métrique | Description | Seuil Alerte | Sévérité |
-|----------|-------------|--------------|----------|
-| **Consumer Lag** | Messages non traités | > 1000 | P2 |
-| **Partition Lag** | Lag par partition | > 500 | P3 |
-| **Under-replicated Partitions** | Partitions sans réplicas | > 0 | P1 |
-| **Active Controller Count** | Controllers actifs | ≠ 1 | P1 |
-| **Offline Partitions** | Partitions inaccessibles | > 0 | P1 |
-| **Bytes In/Out Rate** | Débit Kafka | Anomalie > 50% | P3 |
-| **Request Latency P99** | Latence requêtes | > 100ms | P2 |
-| **ISR Shrink Rate** | Réduction In-Sync Replicas | > 0/min sustained | P2 |
+| Component | Tool | Hosting | Estimated Cost |
+|-----------|------|---------|----------------|
+| **Distributed cache** | Valkey (Redis-compatible) | Aiven | ~150 EUR/mo |
+| **Local cache (L1)** | Go `bigcache` | In-memory per pod | 0 EUR |
 
-## Consumer Lag Monitoring
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CONSUMER LAG                                         │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Producer Offset:     1000  ────────────────────────────────►               │
-│  Consumer Offset:      800  ──────────────────────►                         │
-│                              │◄───── LAG = 200 ─────►│                      │
-│                                                                              │
-│  LAG = Producer Offset - Consumer Offset                                    │
-│                                                                              │
-│  Causes de Lag élevé:                                                       │
-│  • Consumer lent (processing time)                                          │
-│  • Consumer crashé                                                          │
-│  • Pic de trafic                                                            │
-│  • Problème de partition rebalancing                                        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Dashboard Kafka Recommandé
-
-| Panel | Métrique | Type |
-|-------|----------|------|
-| **Total Consumer Lag** | `kafka_consumergroup_lag` | Gauge |
-| **Lag par Consumer Group** | `kafka_consumergroup_lag` by group | Gauge |
-| **Messages In/sec** | `kafka_server_brokertopicmetrics_messagesin_total` | Counter → Rate |
-| **Bytes In/Out** | `kafka_server_brokertopicmetrics_bytesin_total` | Counter → Rate |
-| **Request Latency** | `kafka_network_requestmetrics_requestqueuetimems` | Histogram |
-| **Partition Count** | `kafka_server_replicamanager_partitioncount` | Gauge |
-| **Under-replicated** | `kafka_server_replicamanager_underreplicatedpartitions` | Gauge |
-
----
-
-# 🚀 **Cache Architecture (Valkey)**
-
-## Stack Cache
-
-| Composant | Outil | Hébergement | Coût estimé |
-|-----------|-------|-------------|-------------|
-| **Cache primaire** | Valkey (Redis-compatible) | Aiven for Caching | ~150€/mois |
-| **Cache local (L1)** | Python `cachetools` / Go `bigcache` | In-memory | 0€ |
-
-> **Note :** Valkey est le fork open-source de Redis, maintenu par la Linux Foundation. Aiven supporte Valkey nativement.
-
-## Cache Topology
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MULTI-LAYER CACHE                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ L1 — LOCAL CACHE (per pod)                                          │    │
-│  │ • TTL: 30s - 5min                                                   │    │
-│  │ • Size: 100MB max per pod                                           │    │
-│  │ • Use case: Hot data, config, user sessions                         │    │
-│  └───────────────────────────────┬─────────────────────────────────────┘    │
-│                                  │ Cache miss                               │
-│                                  ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ L2 — DISTRIBUTED CACHE (Valkey cluster)                             │    │
-│  │ • TTL: 5min - 24h                                                   │    │
-│  │ • Size: 10GB                                                        │    │
-│  │ • Use case: Shared state, rate limits, session store                │    │
-│  └───────────────────────────────┬─────────────────────────────────────┘    │
-│                                  │ Cache miss                               │
-│                                  ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ L3 — DATABASE (PostgreSQL)                                          │    │
-│  │ • Source of truth                                                   │    │
-│  │ • Write-through pour updates                                        │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Cache Strategies par Use Case
+## Cache Use Cases
 
 | Use Case | Strategy | TTL | Invalidation |
 |----------|----------|-----|--------------|
-| **Wallet Balance** | Cache-aside (read) | 30s | Event-driven (Kafka) |
-| **Merchant Config** | Read-through | 5min | TTL + Manual |
-| **Rate Limiting** | Write-through | Sliding window | Auto-expire |
-| **Session Data** | Write-through | 24h | Explicit logout |
-| **Gift Card Catalog** | Cache-aside | 15min | Event-driven |
-| **Feature Flags** | Read-through | 1min | Config push |
-
-## Cache Patterns
-
-### Cache-Aside Pattern
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CACHE-ASIDE PATTERN                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. Application checks cache                                                 │
-│  2. If HIT → return cached data                                             │
-│  3. If MISS → query database                                                │
-│  4. Store result in cache with TTL                                          │
-│  5. Return data to caller                                                   │
-│                                                                              │
-│  ┌─────────┐    GET     ┌─────────┐                                         │
-│  │   App   │───────────►│  Cache  │                                         │
-│  └────┬────┘            └────┬────┘                                         │
-│       │                      │ MISS                                         │
-│       │    SELECT            ▼                                              │
-│       └─────────────────►┌─────────┐                                        │
-│                          │   DB    │                                        │
-│                          └─────────┘                                        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Write-Through Pattern
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         WRITE-THROUGH PATTERN                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. Application writes to cache AND database atomically                     │
-│  2. Cache is always consistent with database                                │
-│                                                                              │
-│  ┌─────────┐   SET+TTL   ┌─────────┐                                        │
-│  │   App   │────────────►│  Cache  │                                        │
-│  └────┬────┘             └─────────┘                                        │
-│       │                                                                      │
-│       │   INSERT/UPDATE                                                      │
-│       └─────────────────►┌─────────┐                                        │
-│                          │   DB    │                                        │
-│                          └─────────┘                                        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Cache Invalidation Strategy
-
-| Trigger | Méthode | Use Case |
-|---------|---------|----------|
-| **TTL Expiry** | Automatic | Default pour toutes les clés |
-| **Event-driven** | Kafka consumer | Wallet balance après transaction |
-| **Explicit Delete** | API call | Admin actions, config updates |
-| **Pub/Sub** | Valkey PUBLISH | Real-time invalidation cross-pods |
+| **Session data** | Write-through | 24h | Explicit logout |
+| **Cluster status** | Cache-aside | 30s | Agent event |
+| **Org/team config** | Read-through | 5min | TTL + manual |
+| **Rate limiting** | Write-through | Sliding window | Auto-expire |
+| **API response cache** | Cache-aside | 1min | TTL |
+| **Agent connection state** | Write-through | Heartbeat interval | Agent disconnect |
+| **Service plan definitions** | Read-through | 1h | Manual invalidation |
 
 ## Cache Key Naming Convention
 
 ```
 {service}:{entity}:{id}:{version}
 
-Exemples:
-  wallet:balance:user_123:v1
-  merchant:config:merchant_456:v1
-  giftcard:catalog:category_active:v1
-  ratelimit:api:user_123:minute
-  session:auth:session_abc123
+Examples:
+  auth:session:sess_abc123
+  clusters:status:cluster_456:v1
+  monitoring:metrics:cluster_456:latest
+  ratelimit:api:org_789:minute
+  plans:definition:business:v1
 ```
 
-## Cache Metrics & Monitoring
+## Cache Metrics
 
-| Metric | Seuil alerte | Action |
-|--------|--------------|--------|
-| **Hit Rate** | < 80% | Revoir TTL, préchargement |
+| Metric | Alert Threshold | Action |
+|--------|----------------|--------|
+| **Hit Rate** | < 80% | Review TTL, preloading |
 | **Latency P99** | > 10ms | Check network, cluster size |
 | **Memory Usage** | > 80% | Eviction analysis, scale up |
-| **Evictions/sec** | > 100 | Augmenter cache size |
-| **Connection Errors** | > 0 | Check connectivity, pooling |
+| **Connection Errors** | > 0 | Check connectivity |
 
 ---
 
-# 📋 **Queueing & Background Jobs**
-
-## Architecture Overview
-
-> **Clarification** : La Task Queue est **interne** aux services, pas en frontal comme RabbitMQ.
+# Data Isolation Principle
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    TASK QUEUE vs MESSAGE BROKER (RabbitMQ)                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ❌ Pattern RabbitMQ (frontal) - PAS ce qu'on fait:                         │
-│                                                                              │
-│     Client → RabbitMQ → Worker → Response to Client (synchrone)            │
-│                                                                              │
-│  ✅ Notre pattern (Task Queue interne):                                     │
-│                                                                              │
-│     Client → API (svc-*) → Response immédiate (< 200ms)                    │
-│                    │                                                        │
-│                    └──► enqueue task → Valkey → Worker (async, background)  │
-│                                                                              │
-│  Différence clé:                                                            │
-│  • L'API répond IMMÉDIATEMENT au client                                     │
-│  • Le worker traite en BACKGROUND (fire-and-forget ou avec callback)       │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      DATA ISOLATION MODEL                                 │
+│                                                                           │
+│  ┌─── Kiven SaaS ───────────────────────────────────────────────────┐   │
+│  │                                                                   │   │
+│  │  Product DB (Aiven PG)    Kafka (Aiven)    Valkey (Aiven)        │   │
+│  │  ├─ organizations         ├─ agent events   ├─ sessions          │   │
+│  │  ├─ clusters (metadata)   ├─ audit trail    ├─ rate limits       │   │
+│  │  ├─ audit_log             ├─ alerts         ├─ cache             │   │
+│  │  └─ billing               └─ billing usage  └─ agent state       │   │
+│  │                                                                   │   │
+│  │  CONTAINS: Metadata, config, status, metrics aggregates           │   │
+│  │  NEVER CONTAINS: Customer's actual database rows                  │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌─── Customer A's AWS ──────┐  ┌─── Customer B's AWS ──────┐          │
+│  │                            │  │                            │          │
+│  │  CNPG PostgreSQL           │  │  CNPG PostgreSQL           │          │
+│  │  ├─ Their app data         │  │  ├─ Their app data         │          │
+│  │  └─ Their users            │  │  └─ Their users            │          │
+│  │                            │  │                            │          │
+│  │  S3: Their backups         │  │  S3: Their backups         │          │
+│  │  EBS: Their volumes        │  │  EBS: Their volumes        │          │
+│  │                            │  │                            │          │
+│  │  KIVEN NEVER READS THIS    │  │  KIVEN NEVER READS THIS    │          │
+│  └────────────────────────────┘  └────────────────────────────┘          │
+│                                                                           │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Queueing Tiers
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         QUEUEING ARCHITECTURE                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ TIER 1 — EVENT STREAMING (Kafka)                                    │    │
-│  │ • Use case: Event-driven architecture, CDC, audit logs              │    │
-│  │ • Pattern: Pub/Sub, Event Sourcing                                  │    │
-│  │ • Ordering: Per-partition guaranteed                                │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ TIER 2 — TASK QUEUE (Valkey + Dramatiq)                             │    │
-│  │ • Use case: Background jobs, async processing                       │    │
-│  │ • Pattern: Producer/Consumer, Work Queue                            │    │
-│  │ • Features: Retries, priorities, scheduling                         │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ TIER 3 — SCHEDULED JOBS (Kubernetes CronJobs)                       │    │
-│  │ • Use case: Batch processing, reports, cleanup                      │    │
-│  │ • Pattern: Time-triggered execution                                 │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Kafka vs Task Queue — Quand utiliser quoi ?
-
-| Critère | Kafka | Task Queue (Valkey) |
-|---------|-------|---------------------|
-| **Message Ordering** | ✅ Per-partition | ❌ Best effort |
-| **Message Replay** | ✅ Retention-based | ❌ Non |
-| **Priority Queues** | ❌ Non natif | ✅ Oui |
-| **Delayed Messages** | ❌ Non natif | ✅ Oui |
-| **Dead Letter Queue** | ✅ Configurable | ✅ Intégré |
-| **Exactly-once** | ✅ Avec idempotency | ❌ At-least-once |
-| **Use Case** | Events entre services | Jobs internes async |
-
-## Task Queue Stack
-
-| Composant | Outil | Rôle |
-|-----------|-------|------|
-| **Task Framework** | Dramatiq (Python) / Asynq (Go) | Task definition, execution |
-| **Broker** | Valkey (Redis-compatible) | Message storage, routing |
-| **Result Backend** | Valkey | Task results, status |
-| **Scheduler** | APScheduler / Dramatiq-crontab | Periodic tasks |
-| **Monitoring** | Dramatiq Dashboard / Prometheus | Task metrics |
-
-## Task Processing Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         TASK PROCESSING FLOW                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Producer                    Broker                    Workers              │
-│  ┌─────────┐               ┌─────────┐               ┌─────────┐            │
-│  │ svc-*   │──── enqueue ──►│ Valkey  │◄── poll ─────│ Worker  │            │
-│  │ API     │               │         │               │ Pods    │            │
-│  └─────────┘               │ Queues: │               └────┬────┘            │
-│       │                    │ • high  │                    │                 │
-│       │ Response           │ • default│                   │ execute         │
-│       │ immédiate          │ • low   │                    ▼                 │
-│       ▼                    │ • dlq   │              ┌─────────┐             │
-│   Client                   └─────────┘              │  Task   │             │
-│   (n'attend pas)                                    │ Handler │             │
-│                                                     └─────────┘             │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Queue Definitions
-
-| Queue | Priority | Workers | Use Cases |
-|-------|----------|---------|-----------|
-| **critical** | P0 | 5 | Transaction rollbacks, fraud alerts |
-| **high** | P1 | 10 | Email confirmations, balance updates |
-| **default** | P2 | 20 | Notifications, analytics events |
-| **low** | P3 | 5 | Reports, cleanup, batch exports |
-| **scheduled** | N/A | 3 | Cron-like scheduled tasks |
-| **dead-letter** | N/A | 1 | Failed tasks investigation |
-
-## Retry Strategy
-
-| Retry Policy | Configuration | Use Case |
-|--------------|---------------|----------|
-| **Exponential Backoff** | base=1s, max=1h, multiplier=2 | API calls, external services |
-| **Fixed Interval** | interval=30s, max_retries=5 | Database operations |
-| **No Retry** | max_retries=0 | Idempotent operations |
-
-## Dead Letter Queue (DLQ) Handling
-
-| Étape | Action |
-|-------|--------|
-| 1 | Task fails après max retries |
-| 2 | Task moved to DLQ avec metadata (reason, stack trace, attempts) |
-| 3 | Alert Slack (P3) |
-| 4 | On-call investigate |
-| 5 | Options: Fix → Replay, Manual resolution, Archive |
-
-## Scheduled Jobs (CronJobs)
-
-| Job | Schedule | Service | Description |
-|-----|----------|---------|-------------|
-| **balance-reconciliation** | `0 2 * * *` | svc-wallet | Daily balance verification |
-| **expired-giftcards** | `0 0 * * *` | svc-giftcard | Mark expired cards |
-| **analytics-rollup** | `0 */6 * * *` | svc-analytics | 6-hourly aggregation |
-| **log-cleanup** | `0 3 * * 0` | platform | Weekly log rotation |
-| **backup-verification** | `0 4 * * *` | platform | Daily backup integrity check |
-| **compliance-report** | `0 6 1 * *` | platform | Monthly compliance export |
-
-## Task Queue Monitoring
-
-| Metric | Seuil alerte | Action |
-|--------|--------------|--------|
-| **Queue Depth** | > 1000 tasks | Scale workers |
-| **Processing Time P95** | > 30s | Optimize task, check resources |
-| **Failure Rate** | > 5% | Investigate DLQ, check dependencies |
-| **DLQ Size** | > 10 tasks | Immediate investigation |
-| **Worker Availability** | < 50% | Check pod health, scale up |
+This isolation is **fundamental to Kiven's value proposition**: the customer's data never leaves their infrastructure. Kiven only manages the infrastructure and configuration around it.
 
 ---
 
-*Document maintenu par : Platform Team + Backend Team*  
-*Dernière mise à jour : Janvier 2026*
+*Maintained by: Platform Team + Backend Team*
+*Last updated: February 2026*

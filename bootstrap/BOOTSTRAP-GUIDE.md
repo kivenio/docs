@@ -84,14 +84,18 @@
 
 ## Steps
 
-| Step | Action | Duration |
-|------|--------|----------|
-| 1 | Console → Control Tower → Set up landing zone | 45 min |
-| 2 | Home region: eu-west-1 | Included |
-| 3 | Additional regions: eu-central-1 (DR) | Included |
-| 4 | Log Archive account created | Automatic |
-| 5 | Audit account created | Automatic |
-| 6 | IAM Identity Center enabled | Included |
+> **Voir [BOOTSTRAP-RUNBOOK](../../bootstrap/docs/BOOTSTRAP-RUNBOOK.md) pour les instructions détaillées.**
+
+| Step | Action | Description |
+|------|--------|-------------|
+| 1 | Choose setup preferences | Home region eu-west-1, Region deny enabled |
+| 2 | Create OUs | Security, Sandbox |
+| 3 | Configure Service integrations | Créer Audit + Log Archive accounts |
+| 4 | Review and enable | ~45 min pour compléter |
+
+> ⚠️ **Important:** Dans Step 3, Config et CloudTrail exigent des comptes **différents** :
+> - AWS Config → **Audit** account
+> - CloudTrail → **Log Archive** account
 
 ## What Control Tower creates
 
@@ -114,10 +118,9 @@
 
 | Component | Module | Description |
 |-----------|--------|-------------|
-| **SSO** | `sso/` | Groups, Permission Sets |
-| **Custom Controls** | `control-tower/` | Additional guardrails via Terraform |
+| **SSO** | `sso/` | Groups, Permission Sets, Assignments |
+| **Custom Controls** | `control-tower/` | Additional controls via `aws_controltower_control` |
 | **Account Factory** | `account-factory/` | AFT module via GitHub Actions |
-| **Shared Services** | `core-accounts/` | ECR, Transit Gateway |
 
 ## SSO Groups
 

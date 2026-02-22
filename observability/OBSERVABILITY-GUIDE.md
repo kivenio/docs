@@ -1,13 +1,13 @@
-# 📊 **Observability Guide**
-## *LOCAL-PLUS Monitoring, Logging, Tracing & APM*
+# Observability Guide
+## Kiven Platform -- Monitoring, Logging, Tracing & APM
 
 ---
 
-> **Retour vers** : [Architecture Overview](../EntrepriseArchitecture.md)
+> **Back to**: [Architecture Overview](../EntrepriseArchitecture.md) | **See also**: [OTel Conventions](./OTEL-CONVENTIONS.md)
 
 ---
 
-# 📋 **Table of Contents**
+## Table of Contents
 
 1. [Stack Overview](#stack-overview)
 2. [Telemetry Pipeline](#telemetry-pipeline)
@@ -20,11 +20,13 @@
 9. [Alerting Strategy](#alerting-strategy)
 10. [Dashboards & Visualizations](#dashboards--visualizations)
 
+> For OTel-specific conventions (span naming, attributes, Collector deployment, exporter helper, SDK usage), see [OTEL-CONVENTIONS.md](./OTEL-CONVENTIONS.md).
+
 ---
 
-# 🏗️ **Stack Overview**
+## Stack Overview
 
-## Self-Hosted Stack (Coût Minimal)
+### Self-Hosted Stack
 
 | Composant | Outil | Coût | Retention |
 |-----------|-------|------|-----------|
@@ -51,26 +53,33 @@ Pour conserver les métriques au-delà de 15 jours :
 
 ---
 
-# 🔄 **Telemetry Pipeline**
+## Telemetry Pipeline
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Applications   │     │  OTel Collector │     │   Backends      │
-│                 │     │                 │     │                 │
-│  • SDK Python   │────►│  • Receivers    │────►│  • Prometheus   │
-│  • Auto-instr   │     │  • Processors   │     │  • Loki         │
-│                 │     │  • Exporters    │     │  • Tempo        │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                               │
-                               │ Scrubbing
-                               ▼
-                        ┌─────────────────┐
-                        │ GDPR Compliant  │
-                        │ • No user_id    │
-                        │ • No PII        │
-                        │ • No PAN        │
-                        └─────────────────┘
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐     ┌──────────────┐
+│  Kiven Services  │     │  OTel Agent      │     │  OTel Gateway    │     │  Backends    │
+│                  │     │  (DaemonSet)     │     │  (Deployment)    │     │              │
+│  • Go svc-*      │────►│  • Receive OTLP  │────►│  • Batch         │────►│  Prometheus  │
+│  • kiven-agent   │     │  • Forward       │     │  • Tail sample   │     │  Loki        │
+│  • dashboard     │     │  • No processing │     │  • Scrub PII     │     │  Tempo       │
+│                  │     │                  │     │  • Persistent Q  │     │  Grafana     │
+│  Instrumented    │     │  Lightweight     │     │  • Export         │     │              │
+│  via kiven-go-   │     │  ~50MB per node  │     │  • 2-3 replicas  │     │              │
+│  sdk/telemetry   │     │                  │     │                  │     │              │
+└──────────────────┘     └──────────────────┘     └──────────────────┘     └──────────────┘
+                                                         │
+                                                         │ GDPR Scrubbing
+                                                         ▼
+                                                  ┌──────────────────┐
+                                                  │ Removed:         │
+                                                  │ • user_id        │
+                                                  │ • user.email     │
+                                                  │ • client_ip      │
+                                                  │ • SQL params     │
+                                                  └──────────────────┘
 ```
+
+> See [OTEL-CONVENTIONS.md](./OTEL-CONVENTIONS.md) for Collector config details, exporter helper pattern, and persistent queue setup.
 
 ## OTel Collector — Rôle
 
@@ -131,8 +140,8 @@ Le **Prometheus Operator** utilise des **Custom Resources** pour configurer auto
 
 **Flux :**
 
-1. Le développeur déploie son service avec un label (ex: `app: svc-ledger`)
-2. Un ServiceMonitor sélectionne ce label
+1. Developer deploys service with a label (e.g., `app: svc-api`)
+2. A ServiceMonitor selects this label
 3. Prometheus Operator configure automatiquement Prometheus
 4. Prometheus scrape `/metrics` sur le port spécifié
 
@@ -141,15 +150,17 @@ Le **Prometheus Operator** utilise des **Custom Resources** pour configurer auto
 - Séparation des concerns — monitoring découplé du déploiement
 - Flexibilité — intervalles, relabeling, TLS, authentification
 
-## Endpoints typiques
+### Endpoints
 
 | Service | Port | Path | Description |
 |---------|------|------|-------------|
-| **FastAPI (Python)** | 8080 | `/metrics` | Via `prometheus-fastapi-instrumentator` |
-| **Go gRPC** | 9090 | `/metrics` | Via `promhttp` handler |
-| **Grafana** | 3000 | `/metrics` | Métriques internes |
-| **ArgoCD** | 8083 | `/metrics` | Métriques application |
-| **Node Exporter** | 9100 | `/metrics` | Métriques système (CPU, RAM, disk) |
+| **svc-api** | 8080 | `/metrics` | Via `promhttp` handler |
+| **svc-agent-relay** | 9090 | `/metrics` | gRPC service metrics |
+| **svc-provisioner** | 8082 | `/metrics` | Provisioning pipeline metrics |
+| **kiven-agent** | 9090 | `/metrics` | Agent-side CNPG + PG metrics |
+| **Grafana** | 3000 | `/metrics` | Internal metrics |
+| **ArgoCD** | 8083 | `/metrics` | Application sync metrics |
+| **Node Exporter** | 9100 | `/metrics` | System metrics (CPU, RAM, disk) |
 
 ---
 
@@ -269,10 +280,12 @@ Le **Prometheus Operator** utilise des **Custom Resources** pour configurer auto
 
 | Service | SLI | SLO | Error Budget | Burn Rate Alert |
 |---------|-----|-----|--------------|-----------------|
-| **svc-ledger** | Availability | 99.9% | 43 min/mois | 14.4x = 1h alert |
-| **svc-ledger** | Latency P99 | < 200ms | N/A | P99 > 200ms for 5min |
-| **svc-wallet** | Availability | 99.9% | 43 min/mois | 14.4x = 1h alert |
-| **Platform** | Availability | 99.5% | 3.6h/mois | 6x = 2h alert |
+| **svc-api** | Availability | 99.9% | 43 min/month | 14.4x = 1h alert |
+| **svc-api** | Latency P99 | < 200ms | N/A | P99 > 200ms for 5min |
+| **svc-provisioner** | Availability | 99.9% | 43 min/month | 14.4x = 1h alert |
+| **svc-agent-relay** | Availability | 99.95% | 22 min/month | 14.4x = 30min alert |
+| **Customer PostgreSQL** | Availability | 99.99% | 4.3 min/month | 6x = 15min alert |
+| **Platform (infra)** | Availability | 99.5% | 3.6h/month | 6x = 2h alert |
 
 ## SLO Formulas
 
@@ -427,14 +440,16 @@ Exemple visuel — Histogram en Heatmap (latence)
 | **Replication Lag** | Gauge | `pg_replication_lag_seconds` | Stat avec threshold |
 | **Cache Hit Ratio** | Gauge | `pg_stat_database_blks_hit / (blks_hit + blks_read)` | Stat % |
 
-### Dashboard 4 : Business Metrics (Product)
+### Dashboard 4 : Kiven Business Metrics (Product)
 
-| Panel | Type | Métrique | Visualisation |
-|-------|------|----------|---------------|
-| **Transactions Créées** | Counter | `sum(rate(ledger_transactions_total[1h]))` | Stat (big number) |
-| **Montant Total Traité** | Counter | `sum(ledger_amount_processed_total)` | Stat avec unité € |
-| **Wallets Actifs** | Gauge | `wallet_active_count` | Stat |
-| **Erreurs Métier** | Counter | `sum by (error_type) (rate(business_errors_total[5m]))` | Bar chart |
+| Panel | Type | Metric | Visualization |
+|-------|------|--------|---------------|
+| **Services Created** | Counter | `sum(rate(kiven_services_created_total[1h]))` | Stat (big number) |
+| **Active Databases** | Gauge | `kiven_services_active_count` | Stat |
+| **Provisioning Time P95** | Histogram | `histogram_quantile(0.95, rate(kiven_provisioning_duration_bucket[1h]))` | Time Series |
+| **Connected Agents** | Gauge | `kiven_agent_connected` | Stat |
+| **Backup Success Rate** | Counter | `rate(kiven_backup_success_total[1h]) / rate(kiven_backup_total[1h])` | Gauge % |
+| **Business Errors** | Counter | `sum by (error_type) (rate(kiven_errors_total[5m]))` | Bar chart |
 
 ---
 
@@ -453,5 +468,6 @@ Exemple visuel — Histogram en Heatmap (latence)
 
 ---
 
-*Document maintenu par : Platform Team*  
-*Dernière mise à jour : Janvier 2026*
+*Maintained by: @kivenio/platform*
+*Last updated: February 2026*
+*See also: [OTEL-CONVENTIONS.md](./OTEL-CONVENTIONS.md) for instrumentation details*

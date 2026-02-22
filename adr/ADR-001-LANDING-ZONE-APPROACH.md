@@ -118,12 +118,23 @@ Control Tower controls can be managed via Terraform:
 
 ### Phase 1: Control Tower Setup (Console)
 
-| Step | Action | Duration |
-|------|--------|----------|
-| 1 | Enable Control Tower | 45 min |
-| 2 | Configure home region (eu-west-1) | Included |
-| 3 | Log Archive + Audit accounts created | Automatic |
-| 4 | Enable IAM Identity Center | Included |
+> **Voir [BOOTSTRAP-RUNBOOK](../../bootstrap/docs/BOOTSTRAP-RUNBOOK.md) pour les instructions détaillées.**
+
+| Step | Action |
+|------|--------|
+| 1 | Choose setup preferences (regions, region deny) |
+| 2 | Create OUs (Security, Sandbox) |
+| 3 | Configure Service integrations — **créer 2 comptes** |
+| 4 | Review and enable (~45 min) |
+
+**Comptes créés dans Step 3 :**
+
+| Service | Account | Email |
+|---------|---------|-------|
+| AWS Config Aggregator | **Audit** | `aws+audit@talq.xyz` |
+| CloudTrail Administrator | **Log Archive** | `aws+logs@talq.xyz` |
+
+> ⚠️ Config et CloudTrail exigent des comptes **différents**.
 
 ### Phase 2: Terraform Layer (bootstrap/)
 
