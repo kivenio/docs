@@ -85,7 +85,7 @@ update the template once and each repo pulls the update via `copier update`. =>>
 | `service-go` | `platform-templates-service-go` | Go microservices (`svc-*`) | chi, gRPC, OTel, Dockerfile, air, Testcontainers |
 | `sdk-go` | `platform-templates-sdk-go` | Go libraries (`kiven-go-sdk`, `provider-*`, `kiven-cli`) | No Dockerfile, no cmd/, library-focused |
 | `infrastructure` | `platform-templates-infrastructure` | Terraform modules (`bootstrap`, `infra-customer-*`) | tflint, Checkov, terraform-docs |
-| `platform-component` | `platform-templates-platform-component` | GitOps components (`platform-gitops`, `platform-security`) | Helm/Kustomize, ArgoCD integration |
+| `platform-component` | `platform-templates-platform-component` | GitOps components (`platform-gitops`, `platform-security`) | Helm/Kustomize, Flux integration |
 | `documentation` | `platform-templates-documentation` | Doc sites (`docs`) | MkDocs Material, ADR template |
 
 ## Template Structure (Copier)

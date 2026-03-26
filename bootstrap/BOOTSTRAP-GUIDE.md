@@ -52,7 +52,7 @@
 ├─────────────────────────────────────────────────────────────────────┤
 │  • SSO (groups, permission sets)                                     │
 │  • Custom Controls (aws_controltower_control)                       │
-│  • Account Factory (baseline: OIDC, KMS, S3 state)                  │
+│  • Account Factory (baseline: OIDC, KMS, S3 state)                    │
 │  • Shared Services Account                                           │
 └─────────────────────────────────────────────────────────────────────┘
                                  │
@@ -114,6 +114,12 @@
 
 > **Repo: `bootstrap/`** — GitHub Actions CI/CD
 
+## Terraform State — S3
+
+Terraform state is stored in a versioned, encrypted S3 bucket (`localplus-terraform-state-mgmt`) with state locking via S3 native locking (`use_lockfile = true`).
+
+> **Future**: Migration to [Stategraph](https://stategraph.com/) planned for Q4 2026 (parallel plans, SQL queryable state).
+
 ## What we manage in Terraform
 
 | Component | Module | Description |
@@ -164,7 +170,7 @@
 | Resource | Purpose |
 |----------|---------|
 | AWS Account | In appropriate OU |
-| S3 Bucket | Terraform state |
+| Terraform state | S3 bucket (versioned, encrypted) |
 | GitHub OIDC | CI/CD authentication |
 | KMS Keys | Encryption (terraform, secrets, eks) |
 | Security Baseline | EBS encryption, S3 block public |
@@ -194,7 +200,7 @@
 | 3 | EKS Cluster | VPC, KMS |
 | 4 | IRSA | EKS |
 | 5 | VPC Peering (Aiven) | VPC, Aiven project |
-| 6 | ArgoCD | EKS |
+| 6 | Flux | EKS |
 
 ## Providers
 

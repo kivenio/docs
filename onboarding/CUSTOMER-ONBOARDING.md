@@ -11,8 +11,8 @@
 
 ```
 Step 1          Step 2              Step 3           Step 4           Step 5
-Sign up   →   Deploy CFN     →   Connect EKS   →  Create DB    →  Connected!
-(1 min)       template (2 min)    (1 min)          (5-7 min)       
+Sign up   →   Deploy TF      →   Connect EKS   →  Create DB    →  Connected!
+(1 min)       module (2 min)     (1 min)          (5-7 min)       
 ```
 
 ---
@@ -26,59 +26,36 @@ Customer creates account on kiven.io:
 
 ---
 
-# Step 2: Deploy CloudFormation Template (2 minutes)
+# Step 2: Deploy Terraform Module (2 minutes)
 
-Customer deploys Kiven's CloudFormation template in their AWS account. This creates the `KivenAccessRole` IAM role.
+Customer deploys Kiven's Terraform module in their AWS account. This creates the `KivenAccessRole` IAM role.
 
 ### How It Works
 
 1. Kiven dashboard shows: "Connect your AWS account"
-2. Customer clicks → redirected to AWS CloudFormation console with pre-filled template URL
-3. Customer reviews and clicks "Create Stack"
-4. Stack creates:
+2. Customer copies the Terraform module configuration (or uses the Terraform Registry)
+3. Customer runs `terraform init` and `terraform apply`
+4. Module creates:
    - IAM Role `KivenAccessRole` (trusts Kiven's AWS account)
    - IAM Policy `KivenAccessPolicy` (scoped permissions)
    - ExternalId parameter (unique per customer, prevents confused deputy)
-5. Stack outputs: Role ARN → customer copies back to Kiven dashboard
+5. Terraform outputs: Role ARN → customer copies back to Kiven dashboard
 
-### CloudFormation Template (Summary)
+### Terraform Module (Summary)
 
-```yaml
-AWSTemplateFormatVersion: '2010-09-09'
-Description: Kiven Access Role — Allows Kiven to manage database infrastructure
+```hcl
+module "kiven_access" {
+  source  = "kivenio/kiven/aws"
+  version = "~> 1.0"
 
-Parameters:
-  ExternalId:
-    Type: String
-    Description: Unique ID provided by Kiven (do not change)
-  KivenAccountId:
-    Type: String
-    Default: '123456789012'  # Kiven's AWS account ID
+  external_id      = var.kiven_external_id  # Provided by Kiven dashboard
+  kiven_account_id = "123456789012"          # Kiven's AWS account ID
+}
 
-Resources:
-  KivenAccessRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: KivenAccessRole
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              AWS: !Sub 'arn:aws:iam::${KivenAccountId}:root'
-            Action: 'sts:AssumeRole'
-            Condition:
-              StringEquals:
-                'sts:ExternalId': !Ref ExternalId
-      Policies:
-        - PolicyName: KivenAccessPolicy
-          PolicyDocument:
-            # ... (see CUSTOMER-INFRA-MANAGEMENT.md for full policy)
-
-Outputs:
-  RoleArn:
-    Description: Paste this ARN in the Kiven dashboard
-    Value: !GetAtt KivenAccessRole.Arn
+output "role_arn" {
+  description = "Paste this ARN in the Kiven dashboard"
+  value       = module.kiven_access.role_arn
+}
 ```
 
 ---
@@ -224,7 +201,7 @@ When a customer deletes their database:
 When a customer removes Kiven entirely:
 1. All databases must be deleted first (or exported)
 2. Kiven agent uninstalled (`helm uninstall kiven-agent`)
-3. Customer deletes CloudFormation stack (removes IAM role)
+3. Customer runs `terraform destroy` (removes IAM role)
 4. Kiven retains customer metadata for 90 days (GDPR), then purges
 
 ---

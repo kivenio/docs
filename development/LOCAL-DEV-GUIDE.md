@@ -20,7 +20,7 @@ Each svc-* repo:                                                  Real customers
   Go code + Dockerfile          Full AWS integration:
   task init (mise + tools)      node groups, EBS, S3, IAM
   Own CI (reusable GH wf)
-                                ArgoCD deployment
+                                Flux deployment
 ```
 
 ---
@@ -475,9 +475,9 @@ Move to Level 2 when:
 AWS Account: kiven-sandbox (eu-west-1)
 │
 ├── EKS "kiven-dev"
-│   ├── Kiven services (deployed via ArgoCD)
+│   ├── Kiven services (deployed via Flux)
 │   ├── Aiven VPC peering (product DB)
-│   └── Platform stack (Prometheus, Loki, ArgoCD)
+│   └── Platform stack (Prometheus, Loki, Flux)
 │
 ├── EKS "test-client"
 │   ├── Simulates a real customer cluster

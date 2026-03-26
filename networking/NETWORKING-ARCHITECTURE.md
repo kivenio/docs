@@ -68,7 +68,7 @@
 │  │  │   │ Instance: m6i.xlarge (dedicated resources)              │  │ │ │
 │  │  │   ├─────────────────────────────────────────────────────────┤  │ │ │
 │  │  │   │ PLATFORM NAMESPACE                                      │  │ │ │
-│  │  │   │ • ArgoCD, Cilium, Vault, Kyverno, OTel, Grafana        │  │ │ │
+│  │  │   │ • Flux, Cilium, Vault, Kyverno, OTel, Grafana         │  │ │ │
 │  │  │   └─────────────────────────────────────────────────────────┘  │ │ │
 │  │  │                                                                 │ │ │
 │  │  │   ┌─────────────────────────────────────────────────────────┐  │ │ │
@@ -99,7 +99,7 @@
 
 | Node Pool | Taints | Usage | Instance Type | Scaling |
 |-----------|--------|-------|---------------|---------|
-| **platform** | `platform=true:NoSchedule` | ArgoCD, Monitoring, Security tools | m6i.xlarge | Fixed (2-3 nodes) |
+| **platform** | `platform=true:NoSchedule` | Flux, Monitoring, Security tools | m6i.xlarge | Fixed (2-3 nodes) |
 | **application** | None (default) | Domain services | m6i.large | HPA (2-10 nodes) |
 | **spot** (optionnel) | `spot=true:PreferNoSchedule` | Batch jobs, non-critical | m6i.large (spot) | Auto (0-5 nodes) |
 
@@ -289,7 +289,7 @@
 | Resource | Policy | Authentication |
 |----------|--------|----------------|
 | **grafana.localplus.io** | Team only | GitHub SSO |
-| **argocd.localplus.io** | Team only | GitHub SSO |
+| **flux.localplus.io** | Team only | GitHub SSO |
 | **api.localplus.io/admin** | Admin only | GitHub SSO + MFA |
 | **api.localplus.io/*** | Public | No auth (application handles) |
 
@@ -305,7 +305,7 @@
 | CNAME | www | @ | ☁️ ON | Auto |
 | CNAME | api | tunnel-xxx.cfargotunnel.com | ☁️ ON | Auto |
 | CNAME | grafana | tunnel-xxx.cfargotunnel.com | ☁️ ON | Auto |
-| CNAME | argocd | tunnel-xxx.cfargotunnel.com | ☁️ ON | Auto |
+| CNAME | flux | tunnel-xxx.cfargotunnel.com | ☁️ ON | Auto |
 | TXT | @ | SPF record | ☁️ OFF | Auto |
 | TXT | _dmarc | DMARC policy | ☁️ OFF | Auto |
 | MX | @ | Mail provider | ☁️ OFF | Auto |
@@ -452,7 +452,7 @@
 | **Cloudflare** | ✅ Oui | Load balancing global, health checks multi-origin |
 | **APISIX** | ✅ Oui | Déployable sur tout K8s (EKS, GKE, AKS) |
 | **Aiven** | ✅ Oui | PostgreSQL, Kafka, Valkey disponibles sur AWS/GCP/Azure |
-| **ArgoCD** | ✅ Oui | Peut gérer des clusters multi-cloud |
+| **Flux** | ✅ Oui | Peut gérer des clusters multi-cloud |
 | **Vault** | ✅ Oui | Réplication cross-datacenter |
 | **OTel** | ✅ Oui | Standard ouvert, backends interchangeables |
 

@@ -35,12 +35,12 @@
 
 # 🚀 **CI/CD & Delivery**
 
-## GitOps avec ArgoCD
+## GitOps avec Flux
 
 | Concept | Implementation |
 |---------|----------------|
 | **Source of Truth** | Git repositories |
-| **Delivery Model** | Pull-based (ArgoCD syncs from Git) |
+| **Delivery Model** | Pull-based (Flux reconciles from Git) |
 | **Environments** | Kustomize overlays (dev/staging/prod) |
 | **Promotion** | PR from dev → staging → prod overlays |
 
@@ -59,7 +59,7 @@
 |----------|-------------|--------------|
 | `ci-python.yml` | Lint, test, build | `svc-*`, `sdk-python` |
 | `ci-terraform.yml` | Format, lint, plan, apply | `platform-*`, `bootstrap` |
-| `cd-argocd.yml` | Trigger ArgoCD sync | Tous |
+| `cd-flux.yml` | Trigger Flux reconcile | Tous |
 | `security-scan.yml` | Trivy, Checkov, tfsec | Tous |
 
 ## Pipeline Stages
@@ -71,7 +71,7 @@
      │              │              │              │              │
      │              │              │              │              ▼
      │              │              │              │      ┌─────────────┐
-     │              │              │              │      │ ArgoCD Sync │
+     │              │              │              │      │ Flux Reconcile │
      │              │              │              │      └─────────────┘
      ▼              ▼              ▼              ▼
    Fail fast    Coverage      Image tag     CVE check
@@ -81,10 +81,10 @@
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
-| **Git to Dev** | < 5 min | Commit to ArgoCD sync |
-| **Git to Staging** | < 10 min | Commit to ArgoCD sync (manual approval) |
-| **Git to Prod** | < 15 min | Commit to ArgoCD sync (manual approval) |
-| **Rollback** | < 2 min | ArgoCD rollback |
+| **Git to Dev** | < 5 min | Commit to Flux reconcile |
+| **Git to Staging** | < 10 min | Commit to Flux reconcile (manual approval) |
+| **Git to Prod** | < 15 min | Commit to Flux reconcile (manual approval) |
+| **Rollback** | < 2 min | Flux rollback |
 
 ## Observability Requirements
 
@@ -323,7 +323,7 @@
 | **svc-ledger** | Availability | 99.9% | 43 min/mois | 14.4x = 1h alert |
 | **svc-ledger** | Latency P99 | < 200ms | N/A | P99 > 200ms for 5min |
 | **svc-wallet** | Availability | 99.9% | 43 min/mois | 14.4x = 1h alert |
-| **Platform (ArgoCD, Prometheus)** | Availability | 99.5% | 3.6h/mois | 6x = 2h alert |
+| **Platform (Flux, Prometheus)** | Availability | 99.5% | 3.6h/mois | 6x = 2h alert |
 
 ## Error Budget Policy
 

@@ -59,7 +59,7 @@
 | Layer | Type de test | Cible | Fréquence |
 |-------|--------------|-------|-----------|
 | **Infrastructure** | Terraform tests, Policy checks | IaC modules | PR |
-| **Platform** | Smoke tests, Policy audit | Kubernetes, ArgoCD | Post-deploy |
+| **Platform** | Smoke tests, Policy audit | Kubernetes, Flux | Post-deploy |
 | **Application** | Unit, Integration, Contract | Services Python/Go | PR |
 | **System** | E2E, Performance, Chaos | Full stack | Nightly/Weekly |
 
@@ -114,7 +114,7 @@
 | **Manifest validation** | `kubectl --dry-run`, `kubeconform` | PR | YAML valide, schema correct |
 | **Policy check** | Kyverno CLI | PR | Policies passent |
 | **Helm lint** | `helm lint`, `helm template` | PR | Charts valides |
-| **Smoke test** | ArgoCD sync + health check | Post-deploy | App déployée et healthy |
+| **Smoke test** | Flux reconcile + health check | Post-deploy | App déployée et healthy |
 
 ---
 

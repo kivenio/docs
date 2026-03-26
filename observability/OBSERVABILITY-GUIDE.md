@@ -159,7 +159,7 @@ Le **Prometheus Operator** utilise des **Custom Resources** pour configurer auto
 | **svc-provisioner** | 8082 | `/metrics` | Provisioning pipeline metrics |
 | **kiven-agent** | 9090 | `/metrics` | Agent-side CNPG + PG metrics |
 | **Grafana** | 3000 | `/metrics` | Internal metrics |
-| **ArgoCD** | 8083 | `/metrics` | Application sync metrics |
+| **Flux** | 8080 | `/metrics` | Reconciliation metrics |
 | **Node Exporter** | 9100 | `/metrics` | System metrics (CPU, RAM, disk) |
 
 ---

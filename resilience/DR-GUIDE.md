@@ -75,7 +75,7 @@
 | **PostgreSQL PITR** | Aiven WAL | Continuous | 24h | Aiven | AES-256 |
 | **Kafka** | Topic retention | N/A | 7 jours | Aiven | AES-256 |
 | **Valkey** | RDB + AOF | Continuous | 24h | Aiven | AES-256 |
-| **Terraform state** | S3 versioning | Every apply | 90 jours | S3 | KMS |
+| **Terraform state** | S3 versioning | Every apply | 90 jours | S3 bucket | AES-256 |
 | **Git repos** | GitHub | Every push | Infini | GitHub | At-rest |
 | **Secrets (Vault)** | Integrated storage | Continuous | 30 jours | Vault HA | Transit |
 
@@ -84,7 +84,7 @@
 | Check | Frequency | Automation | Alert si échec |
 |-------|-----------|------------|----------------|
 | PostgreSQL restore test | Weekly | Job K8s scheduled | P2 |
-| Terraform state integrity | Daily | CI pipeline | P3 |
+| Terraform state backup | Daily | CI pipeline | P3 |
 | Vault backup verification | Weekly | Job K8s scheduled | P2 |
 | Git clone verification | Monthly | GitHub Actions | P4 |
 
@@ -145,7 +145,7 @@
 |-----------|---------|-------------------|-------|--------------|
 | **Pod** | Crash | Kubernetes restart | < 30s | Aucune |
 | **Pod** | OOM | Kubernetes restart + alert | < 30s | Investigation |
-| **Deployment** | Bad deploy | ArgoCD rollback auto (si configuré) | < 2min | Aucune |
+| **Deployment** | Bad deploy | Flux rollback auto (si configuré) | < 2min | Aucune |
 | **DB Primary** | Failure | Aiven automatic failover | < 5min | Aucune |
 | **DB Connection** | Pool exhausted | PgBouncer retry + scale | < 1min | Aucune |
 | **Kafka Consumer** | Lag > threshold | KEDA auto-scale | < 2min | Aucune |
@@ -241,13 +241,13 @@
 
 ## DR Automation — Infrastructure as Code
 
-> **Principe :** Toute l'infrastructure est reproductible via Terraform + ArgoCD.
+> **Principe :** Toute l'infrastructure est reproductible via Terraform + Flux.
 
 | Composant | Reproductibilité | Temps estimé |
 |-----------|------------------|--------------|
 | **EKS Cluster** | Terraform apply | ~30 min |
-| **Platform tools** | ArgoCD sync | ~15 min |
-| **Applications** | ArgoCD sync | ~10 min |
+| **Platform tools** | Flux reconcile | ~15 min |
+| **Applications** | Flux reconcile | ~10 min |
 | **Database** | Aiven restore from backup | ~1-2h |
 | **DNS cutover** | Cloudflare API / Terraform | ~5 min |
 
@@ -258,7 +258,7 @@
 | **1. Detection** | 15 min | Confirmer failure, déclarer DR | Alerting automatique |
 | **2. Infrastructure** | 1-2h | Terraform apply DR region | Semi-auto (approval required) |
 | **3. Data** | 1-2h | Aiven restore, verify integrity | Semi-auto (Aiven console) |
-| **4. Applications** | 30 min | ArgoCD sync | Automatique |
+| **4. Applications** | 30 min | Flux reconcile | Automatique |
 | **5. Traffic** | 15 min | Cloudflare DNS update | Semi-auto (Terraform) |
 | **6. Validation** | 30 min | E2E tests, verify SLIs | Automatique (CI) |
 

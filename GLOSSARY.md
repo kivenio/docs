@@ -88,7 +88,7 @@
 | **IRSA (IAM Roles for Service Accounts)** | AWS feature mapping K8s ServiceAccounts to IAM roles. CNPG uses IRSA to write backups to S3. |
 | **AssumeRole** | AWS IAM action to temporarily take on another role's permissions. Kiven assumes customer's `KivenAccessRole`. |
 | **Cross-Account Access** | Pattern where one AWS account accesses resources in another account via IAM role trust. |
-| **CloudFormation** | AWS IaC service. Kiven provides a CF template for customers to create the access role. |
+| **Terraform** | HashiCorp IaC tool. Kiven provides a Terraform module for customers to create the access role. |
 | **KMS (Key Management Service)** | AWS encryption key management. Used for EBS and S3 encryption. |
 | **Managed Node Group** | EKS feature for managed EC2 instances as K8s worker nodes. Kiven creates dedicated node groups for databases. |
 | **Taints** | K8s mechanism to repel pods from nodes. Kiven taints DB nodes so only DB pods run there. |
@@ -134,8 +134,9 @@
 |------|------------|
 | **Provider Interface** | Go interface that each data service (CNPG, Strimzi, Redis) implements. Enables multi-operator support. |
 | **Plugin Architecture** | Design pattern where functionality is added via plugins without modifying core code. |
-| **GitOps** | Managing infrastructure and apps using Git as single source of truth. ArgoCD pulls from Git. |
-| **Infrastructure as Code (IaC)** | Managing infra through code (Terraform, CloudFormation) rather than manual processes. |
+| **GitOps** | Managing infrastructure and apps using Git as single source of truth. Flux reconciles from Git. |
+| **Infrastructure as Code (IaC)** | Managing infra through code (Terraform) rather than manual processes. |
+| **Stategraph** | Terraform/OpenTofu state backend using PostgreSQL instead of flat state files. Enables parallel plans, no lock waiting, SQL-queryable state. See [stategraph.com](https://stategraph.com/). **Planned for Q4 2026** — currently using S3. |
 | **Trunk-Based Development** | All developers merge to main branch. Short-lived feature branches. |
 | **C4 Model** | Architecture documentation: Context, Container, Component, Code diagrams. |
 | **Defense in Depth** | Multiple security layers so one breach doesn't compromise everything. |

@@ -74,7 +74,7 @@ Kiven is designed for:
 | Category | Choice | Rationale |
 |----------|--------|-----------|
 | **Cloud** | AWS (eu-west-1) | GDPR, proximity to EU customers |
-| **Orchestration** | EKS + ArgoCD | GitOps, cloud-native |
+| **Orchestration** | EKS + Flux | GitOps, cloud-native |
 | **Backend** | Go (stdlib + chi) | K8s ecosystem is Go, fast, small binaries |
 | **Frontend** | Next.js 14+ (App Router) + Tailwind + shadcn/ui | Modern, fast, beautiful |
 | **Agent** | Go (client-go + controller-runtime) | Native K8s SDK, single binary |
@@ -166,7 +166,7 @@ Kiven is designed for:
 │  │                                                                      │ │
 │  │   ┌──────────────────────────────────────────────────────────────┐  │ │
 │  │   │ PLATFORM NODE POOL (taints: platform=true:NoSchedule)        │  │ │
-│  │   │ • ArgoCD         • Cilium          • Vault Agent             │  │ │
+│  │   │ • Flux           • Cilium          • Vault Agent             │  │ │
 │  │   │ • OTel Collector • Prometheus      • Grafana                 │  │ │
 │  │   │ • Loki           • Tempo           • Kyverno                 │  │ │
 │  │   └──────────────────────────────────────────────────────────────┘  │ │
@@ -484,11 +484,11 @@ For DevOps/Platform engineers who want full control. Like Lens for Kubernetes.
 | `maintenance/v*.x.x` | Version maintenance | Cherry-pick from main only |
 | `feature/*` | Development | Short-lived, merge to main |
 
-## 3.2 GitOps Flow (ArgoCD)
+## 3.2 GitOps Flow (Flux)
 
-- **Centralized ArgoCD**: Single instance managing all environments
-- **App-of-Apps pattern**: ApplicationSets with Git + Matrix generators
-- **Auto-sync**: Dev auto-sync, Staging/Prod manual approval
+- **Centralized Flux**: Single instance managing all environments
+- **Kustomization/HelmRelease pattern**: Git + Kustomize/Helm generators
+- **Auto-reconcile**: Dev auto-reconcile, Staging/Prod manual approval
 
 ## 3.3 Environments
 
@@ -546,7 +546,7 @@ For DevOps/Platform engineers who want full control. Like Lens for Kubernetes.
 
 | Repo | Description |
 |------|-------------|
-| `platform-gitops/` | ArgoCD, ApplicationSets |
+| `platform-gitops/` | Flux, Kustomizations, HelmReleases |
 | `platform-networking/` | Cilium, Gateway API |
 | `platform-observability/` | OTel, Prometheus, Loki, Tempo, Grafana |
 | `platform-security/` | Vault, External-Secrets, Kyverno |
@@ -800,7 +800,7 @@ For DevOps/Platform engineers who want full control. Like Lens for Kubernetes.
 | Phase | Focus | Duration |
 |-------|-------|----------|
 | **1** | Bootstrap Layer 0-1 (IAM, VPC, EKS) | 3 weeks |
-| **2** | Platform GitOps (ArgoCD) | 1 week |
+| **2** | Platform GitOps (Flux) | 1 week |
 | **3** | Platform Networking (Cilium, Gateway API) + Cloudflare | 2 weeks |
 | **4** | Platform Security (Vault, Kyverno) | 2 weeks |
 | **5** | Platform Observability (Prometheus, Loki, Tempo) | 2 weeks |
@@ -840,7 +840,7 @@ For DevOps/Platform engineers who want full control. Like Lens for Kubernetes.
 - [ ] Cross-account IAM for customer infra access
 - [ ] Provider/plugin architecture for multi-operator future
 - [ ] Aiven for Kiven product DB + Kafka
-- [ ] ArgoCD centralized
+- [ ] Flux centralized
 - [ ] Cilium + Gateway API
 - [ ] Kyverno
 - [ ] HashiCorp Vault self-hosted
@@ -898,7 +898,7 @@ For DevOps/Platform engineers who want full control. Like Lens for Kubernetes.
 | **DR Guide** | Backup, recovery, SaaS DR + customer DB DR | [resilience/DR-GUIDE.md](resilience/DR-GUIDE.md) |
 | **Agent Architecture** | Agent design, gRPC protocol, deployment | [agent/AGENT-ARCHITECTURE.md](agent/AGENT-ARCHITECTURE.md) |
 | **Customer Infra Management** | Nodes, storage, S3, IAM, cross-account | [infra/CUSTOMER-INFRA-MANAGEMENT.md](infra/CUSTOMER-INFRA-MANAGEMENT.md) |
-| **Customer Onboarding** | CloudFormation, EKS discovery, provisioning | [onboarding/CUSTOMER-ONBOARDING.md](onboarding/CUSTOMER-ONBOARDING.md) |
+| **Customer Onboarding** | Terraform module, EKS discovery, provisioning | [onboarding/CUSTOMER-ONBOARDING.md](onboarding/CUSTOMER-ONBOARDING.md) |
 | **Provider Interface** | Plugin architecture, Go interface, adding providers | [providers/PROVIDER-INTERFACE.md](providers/PROVIDER-INTERFACE.md) |
 | **Glossary** | All terminology | [GLOSSARY.md](GLOSSARY.md) |
 
