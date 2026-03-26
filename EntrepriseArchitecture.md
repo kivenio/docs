@@ -1,213 +1,463 @@
-# 🏗️ **LOCAL-PLUS — Architecture Définitive**
-## *Gift Card & Loyalty Platform*
-### *Version 1.0 — Janvier 2026*
+# Kiven — Architecture Overview
+## *Managed Data Services, On Your Infrastructure*
+### *Version 2.0 — February 2026*
 
 ---
 
-# 📋 **PARTIE I — CONTEXTE & CONTRAINTES**
-
-## **1.1 Paramètres Business**
-
-| Paramètre | Valeur | Impact architectural |
-|-----------|--------|---------------------|
-| **RPO** | 1 heure | Backups horaires minimum, réplication async acceptable |
-| **RTO** | 15 minutes | Failover automatisé, pas de procédure manuelle |
-| **TPS** | 500 transactions/sec | Pas de sharding nécessaire, single Postgres suffit |
-| **RPS** | 1500 requêtes/sec | Load balancer + HPA standard |
-| **Durée de vie** | 5+ ans | Design pour évolutivité, pas de shortcuts |
-| **Équipe on-call** | 5 personnes | Runbooks exhaustifs, alerting structuré |
-
-## **1.2 Contraintes Compliance**
-
-| Standard | Exigences clés | Impact |
-|----------|---------------|--------|
-| **GDPR** | Droit à l'oubli, consentement, data residency EU | Logs anonymisés, data retention policies, EU region |
-| **PCI-DSS** | Pas de stockage PAN, encryption at rest/transit, audit logs | mTLS, Vault pour secrets, audit trail immutable |
-| **SOC2** | Contrôle d'accès, monitoring, incident response | RBAC strict, observabilité complète, runbooks documentés |
-
-## **1.3 Contraintes Techniques**
-
-| Contrainte | Choix | Rationale |
-|------------|-------|-----------|
-| **Cloud primaire** | AWS | Décision business |
-| **Région initiale** | eu-west-1 (Ireland) | GDPR, latence Europe |
-| **Multi-région** | Prévu, pas immédiat | Design pour, implémente plus tard |
-| **Database** | Aiven PostgreSQL | Managed, multicloud-ready, PCI compliant |
-| **Messaging** | Aiven Kafka | Managed, multicloud-ready |
-| **Cache** | Aiven Valkey | Redis-compatible, managed |
-| **Edge/CDN** | Cloudflare | Free tier, WAF, DDoS, global CDN, multi-cloud ready |
-| **API Gateway / APIM** | À définir (Phase future) | Options : AWS API Gateway, Gravitee, Kong — décision ultérieure |
-| **DNS Public** | Cloudflare DNS | Authoritative, DNSSEC, global anycast |
-| **DNS Interne/Backup** | AWS Route53 | Private hosted zones, health checks, failover |
-| **Observabilité** | Self-hosted, coût minimal | Prometheus/Loki/Tempo + CloudWatch Logs (tier gratuit) |
+> **This document is the entry point for Kiven's architecture.**
+> It provides a high-level overview and links to detailed documentation.
 
 ---
 
-# 🏛️ **PARTIE II — ARCHITECTURE LOGIQUE**
+# PART I — EXECUTIVE SUMMARY
 
-## **2.1 Vue d'ensemble**
+## 1.1 What Is Kiven
 
-### **2.1.1 AWS Multi-Account Strategy (Control Tower)**
+Kiven is a **fully managed data platform** that runs on the customer's own Kubernetes infrastructure. Starting with PostgreSQL (powered by CloudNativePG), Kiven delivers an Aiven-quality experience — but the data never leaves the customer's cluster.
+
+**How it works:**
+1. Customer signs up → grants Kiven access to their EKS (cross-account IAM Role)
+2. Kiven provisions everything: dedicated nodes, storage, S3 backups, CNPG operator, PostgreSQL
+3. Customer gets: a connection string + a dashboard
+4. Kiven manages everything from that point: scaling, backups, monitoring, security, tuning
+
+**The customer never touches kubectl, YAML, CNPG, or Kubernetes internals.**
+
+### Value Proposition
+
+| vs. Aiven | vs. Self-Managed CNPG | vs. Launchly |
+|-----------|----------------------|-------------|
+| Same UX, but on customer's infra | Same PostgreSQL, but fully managed | Same CNPG, but Aiven-level depth |
+| 40-60% cheaper (no Aiven markup) | No need for K8s/CNPG expertise | Full infra management (nodes, storage) |
+| Data never leaves customer's VPC | Risk eliminated by best practices | DBA intelligence built-in |
+
+## 1.2 Scope
+
+Kiven is designed for:
+- **Scalability**: Support 100+ customer clusters across multiple EKS environments
+- **Reliability**: RPO 1h, RTO 15min (Kiven SaaS); RPO 5min, RTO 5min (customer databases via CNPG)
+- **Compliance**: GDPR (EU data residency), SOC2 (audit, RBAC, encryption)
+- **Extensibility**: Provider/plugin architecture for multi-operator future (Kafka, Redis, Elasticsearch)
+- **Lifespan**: 5+ years
+
+### Non-Goals (Phase 1)
+- Multi-cloud support (GKE, AKS) — Phase 3
+- Non-PostgreSQL data services (Kafka, Redis) — Phase 3
+- Self-hosted / air-gapped edition — Phase 3
+- Mobile app
+
+## 1.3 Key Parameters
+
+| Parameter | Value | Impact |
+|-----------|-------|--------|
+| **RPO (Kiven SaaS)** | 1 hour | Hourly backups of product database |
+| **RTO (Kiven SaaS)** | 15 minutes | Automated failover |
+| **RPO (Customer DBs)** | Configurable (1min–24h) | Continuous WAL archiving via Barman |
+| **RTO (Customer DBs)** | < 5 minutes | CNPG automatic failover, multi-AZ |
+| **Provisioning time** | < 10 minutes | From "Create Database" to connection string |
+| **Agent footprint** | < 50MB RAM, < 0.1 CPU | Minimal impact on customer cluster |
+| **On-call team** | 5 people | Runbooks for both SaaS and customer infra |
+
+## 1.4 Compliance Summary
+
+| Standard | Key Requirements | Scope |
+|----------|-----------------|-------|
+| **GDPR** | EU data residency, right to erasure, DPA | Kiven SaaS (eu-west-1) + customer data stays in their infra |
+| **SOC2** | RBAC, audit logging, encryption, incident response | Kiven SaaS operations + customer infra access audit trail |
+
+> Note: PCI-DSS is NOT in scope. Kiven does not process payment card data. Customer compliance (HIPAA, PCI, etc.) is helped by data staying on their own infra.
+
+## 1.5 Tech Stack Overview
+
+### Kiven SaaS Platform
+
+| Category | Choice | Rationale |
+|----------|--------|-----------|
+| **Cloud** | AWS (eu-west-1) | GDPR, proximity to EU customers |
+| **Orchestration** | EKS + Flux | GitOps, cloud-native |
+| **Backend** | Go (stdlib + chi) | K8s ecosystem is Go, fast, small binaries |
+| **Frontend** | Next.js 14+ (App Router) + Tailwind + shadcn/ui | Modern, fast, beautiful |
+| **Agent** | Go (client-go + controller-runtime) | Native K8s SDK, single binary |
+| **Agent Comms** | gRPC + mTLS | Secure, efficient, bidirectional streaming |
+| **Product DB** | PostgreSQL (Aiven) | Dogfooding the ecosystem, managed |
+| **Cache** | Valkey | Sessions, rate limiting, real-time state |
+| **Messaging** | Kafka (Aiven) | Agent events, audit trail, async operations |
+| **Edge/CDN** | Cloudflare | WAF, DDoS, Zero Trust, Tunnel |
+| **Observability** | Prometheus / Loki / Tempo | Self-hosted, cost-efficient |
+| **Secrets** | HashiCorp Vault | Dynamic secrets, rotation, IRSA |
+| **CNI** | Cilium | mTLS, Gateway API, network policies |
+| **Policies** | Kyverno | Admission control, pod security |
+| **Billing** | Stripe | SaaS billing, per-cluster pricing |
+| **CI/CD** | GitHub Actions | Already in place |
+| **IaC** | Terraform | Infrastructure as Code |
+
+### Customer-Side (Provisioned by Kiven)
+
+| Component | Technology | Managed By |
+|-----------|-----------|------------|
+| **Kubernetes nodes** | EKS Managed Node Groups | Kiven (via AWS API) |
+| **PostgreSQL** | CloudNativePG (CNPG) | Kiven (via agent) |
+| **Connection pooling** | PgBouncer (CNPG Pooler CRD) | Kiven (via agent) |
+| **Backups** | Barman → S3 | Kiven (via agent + AWS API) |
+| **Storage** | EBS gp3 (encrypted, KMS) | Kiven (via AWS API) |
+| **Backup storage** | S3 bucket (encrypted, lifecycle) | Kiven (via AWS API) |
+| **TLS** | cert-manager + self-signed CA | Kiven (via agent) |
+| **Monitoring agent** | Kiven Agent (Go) | Kiven |
+
+---
+
+# PART II — ARCHITECTURE
+
+## 2.1 System Context (C4 Level 1)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AWS CONTROL TOWER (Organization)                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
-│  │  MANAGEMENT     │  │  SECURITY       │  │  LOG ARCHIVE    │             │
-│  │  ACCOUNT        │  │  ACCOUNT        │  │  ACCOUNT        │             │
-│  │  • Control Tower│  │  • GuardDuty    │  │  • CloudTrail   │             │
-│  │  • Organizations│  │  • Security Hub │  │  • Config Logs  │             │
-│  │  • SCPs         │  │  • IAM Identity │  │  • VPC Flow Logs│             │
-│  │                 │  │    Center       │  │                 │             │
-│  └─────────────────┘  └─────────────────┘  └─────────────────┘             │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                    WORKLOAD ACCOUNTS (OU: Workloads)                │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │   │
-│  │  │ DEV Account │  │ STAGING     │  │ PROD Account│                  │   │
-│  │  │             │  │ Account     │  │             │                  │   │
-│  │  │ VPC + EKS   │  │ VPC + EKS   │  │ VPC + EKS   │                  │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘                  │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                    SHARED SERVICES ACCOUNT (OU: Infrastructure)     │   │
-│  │  • Transit Gateway Hub                                              │   │
-│  │  • Centralized VPC Endpoints                                        │   │
-│  │  • Container Registry (ECR)                                         │   │
-│  │  • Artifact Storage (S3)                                            │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **2.1.2 Architecture EKS par Environnement**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              INTERNET                                       │
-│                           (End Users)                                       │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                              USERS                                        │
+│         Developers (Simple Mode)    DevOps (Advanced Mode)               │
+└──────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CLOUDFLARE EDGE (Global)                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  • DNS (localplus.io)          • WAF (OWASP rules)                         │
-│  • DDoS Protection (L3-L7)     • SSL/TLS Termination                       │
-│  • CDN (static assets)         • Bot Protection                            │
-│  • Cloudflare Tunnel           • Zero Trust Access                         │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         CLOUDFLARE EDGE                                   │
+│                (DNS, WAF, DDoS, CDN, Zero Trust)                         │
+└──────────────────────────────────────────────────────────────────────────┘
                                     │
-                                    │ Cloudflare Tunnel (encrypted)
                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     WORKLOAD ACCOUNT (PROD) — eu-west-1                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │                        VPC — 10.0.0.0/16                              │ │
-│  │                                                                       │ │
-│  │  ┌─────────────────────────────────────────────────────────────────┐ │ │
-│  │  │                    EKS CLUSTER                                  │ │ │
-│  │  │                                                                 │ │ │
-│  │  │   ┌─────────────────────────────────────────────────────────┐  │ │ │
-│  │  │   │ NODE POOL: platform (taints: platform=true:NoSchedule)  │  │ │ │
-│  │  │   │ Instance: m6i.xlarge (dedicated resources)              │  │ │ │
-│  │  │   ├─────────────────────────────────────────────────────────┤  │ │ │
-│  │  │   │ PLATFORM NAMESPACE                                      │  │ │ │
-│  │  │   │ • ArgoCD (centralisé)                                   │  │ │ │
-│  │  │   │ • Cilium (CNI + Gateway API)                            │  │ │ │
-│  │  │   │ • Vault Agent Injector                                  │  │ │ │
-│  │  │   │ • External-Secrets Operator                             │  │ │ │
-│  │  │   │ • Kyverno                                               │  │ │ │
-│  │  │   │ • OTel Collector                                        │  │ │ │
-│  │  │   │ • Prometheus + Loki + Tempo + Grafana                   │  │ │ │
-│  │  │   └─────────────────────────────────────────────────────────┘  │ │ │
-│  │  │                                                                 │ │ │
-│  │  │   ┌─────────────────────────────────────────────────────────┐  │ │ │
-│  │  │   │ NODE POOL: application (default, auto-scaling)          │  │ │ │
-│  │  │   │ Instance: m6i.large (cost-optimized)                    │  │ │ │
-│  │  │   ├─────────────────────────────────────────────────────────┤  │ │ │
-│  │  │   │ APPLICATION NAMESPACES                                  │  │ │ │
-│  │  │   │ • svc-ledger                                            │  │ │ │
-│  │  │   │ • svc-wallet                                            │  │ │ │
-│  │  │   │ • svc-merchant                                          │  │ │ │
-│  │  │   │ • svc-giftcard                                          │  │ │ │
-│  │  │   │ • svc-notification                                      │  │ │ │
-│  │  │   └─────────────────────────────────────────────────────────┘  │ │ │
-│  │  │                                                                 │ │ │
-│  │  └─────────────────────────────────────────────────────────────────┘ │ │
-│  │                                                                       │ │
-│  │                           │ VPC Peering / Transit Gateway             │ │
-│  │                           ▼                                           │ │
-│  │  ┌─────────────────────────────────────────────────────────────────┐ │ │
-│  │  │                    AIVEN VPC                                    │ │ │
-│  │  │  • PostgreSQL (Primary + Read Replica)                         │ │ │
-│  │  │  • Kafka Cluster                                               │ │ │
-│  │  └─────────────────────────────────────────────────────────────────┘ │ │
-│  │                                                                       │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │                    EXTERNAL SERVICES                                  │ │
-│  │  • AWS S3 (Terraform state, backups, artifacts)                      │ │
-│  │  • AWS KMS (Encryption keys)                                         │ │
-│  │  • AWS Secrets Manager (bootstrap secrets only)                      │ │
-│  │  • HashiCorp Vault (self-hosted on EKS — runtime secrets)            │ │
-│  │  • AWS CloudWatch Logs (tier gratuit, fallback)                      │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      KIVEN SaaS PLATFORM                                  │
+│                    (AWS EKS — eu-west-1)                                  │
+│                                                                           │
+│  Dashboard + API + CLI + Terraform Provider                              │
+│  Core Services: provisioner, infra, clusters, backups, monitoring...     │
+│  Provider/Plugin: CNPG Provider (Phase 1), Strimzi (future)...          │
+└──────────────────────────────────────────────────────────────────────────┘
+              │                                       │
+              │ gRPC/mTLS (Agent)                     │ Cross-Account
+              │                                       │ IAM AssumeRole
+              ▼                                       ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    CUSTOMER'S AWS ACCOUNT / EKS                           │
+│                                                                           │
+│  ┌──── Managed by Kiven ──────────────────────────────────────────────┐  │
+│  │  Node Group: kiven-db-nodes (dedicated, tainted, multi-AZ)        │  │
+│  │  Namespace: kiven-system (agent + CNPG operator)                   │  │
+│  │  Namespace: kiven-databases (PostgreSQL clusters)                  │  │
+│  │  S3 Bucket: kiven-backups-{customer-id}                           │  │
+│  │  IAM: IRSA roles for S3 access                                    │  │
+│  │  CNPG: PostgreSQL Primary + Replicas + PgBouncer                  │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ┌──── Managed by Customer ───────────────────────────────────────────┐  │
+│  │  Their app nodes, services, workloads                              │  │
+│  │  Connect to: pg-main.kiven-databases.svc:5432                      │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### **2.1.3 Node Pool Strategy**
-
-|| Node Pool | Taints | Usage | Instance Type | Scaling |
-||-----------|--------|-------|---------------|---------|
-|| **platform** | `platform=true:NoSchedule` | ArgoCD, Monitoring, Security tools | m6i.xlarge | Fixed (2-3 nodes) |
-|| **application** | None (default) | Domain services | m6i.large | HPA (2-10 nodes) |
-|| **spot** (optionnel) | `spot=true:PreferNoSchedule` | Batch jobs, non-critical | m6i.large (spot) | Auto (0-5 nodes) |
-
-## **2.2 Domain Services**
-
-| Service | Responsabilité | Pattern | Criticité |
-|---------|---------------|---------|-----------|
-| **svc-ledger** | Earn/Burn transactions, ACID ledger | Sync REST + gRPC | P0 — Core |
-| **svc-wallet** | Balance queries, snapshots | Sync REST + gRPC | P0 — Core |
-| **svc-merchant** | Onboarding, configuration | Sync REST | P1 |
-| **svc-giftcard** | Catalog, rewards | Sync REST | P1 |
-| **svc-notification** | SMS/Email dispatch | Async (Kafka consumer) | P2 |
-
-## **2.3 Data Flow**
+## 2.2 Container Diagram (C4 Level 2) — Kiven SaaS
 
 ```
-┌─────────────┐     gRPC      ┌─────────────┐
-│ svc-ledger  │◄─────────────►│ svc-wallet  │
-└──────┬──────┘               └──────┬──────┘
-       │                             │
-       │ Outbox                      │ Read
-       ▼                             ▼
-┌─────────────┐              ┌─────────────┐
-│   Kafka     │              │ PostgreSQL  │
-│  (Aiven)    │              │  (Aiven)    │
-└──────┬──────┘              └─────────────┘
-       │
-       │ Consume
-       ▼
-┌─────────────────────┐
-│  svc-notification   │
-│  svc-analytics      │
-└─────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                  KIVEN SaaS — AWS WORKLOAD ACCOUNT — eu-west-1           │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐ │
+│  │                           EKS CLUSTER                                │ │
+│  │                                                                      │ │
+│  │   ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │   │ PLATFORM NODE POOL (taints: platform=true:NoSchedule)        │  │ │
+│  │   │ • Flux           • Cilium          • Vault Agent             │  │ │
+│  │   │ • OTel Collector • Prometheus      • Grafana                 │  │ │
+│  │   │ • Loki           • Tempo           • Kyverno                 │  │ │
+│  │   └──────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                      │ │
+│  │   ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │   │ APPLICATION NODE POOL (auto-scaling)                         │  │ │
+│  │   │                                                              │  │ │
+│  │   │  ┌── Core ─────────────────────────────────────────────┐    │  │ │
+│  │   │  │ svc-api          svc-auth          svc-provisioner  │    │  │ │
+│  │   │  │ svc-infra        svc-clusters      svc-agent-relay  │    │  │ │
+│  │   │  └─────────────────────────────────────────────────────┘    │  │ │
+│  │   │                                                              │  │ │
+│  │   │  ┌── Data Services ────────────────────────────────────┐    │  │ │
+│  │   │  │ svc-backups      svc-monitoring    svc-users        │    │  │ │
+│  │   │  │ svc-yamleditor   svc-migrations                     │    │  │ │
+│  │   │  └─────────────────────────────────────────────────────┘    │  │ │
+│  │   │                                                              │  │ │
+│  │   │  ┌── Business ────────────────────────────────────────┐     │  │ │
+│  │   │  │ svc-billing      svc-audit         svc-notification│     │  │ │
+│  │   │  └─────────────────────────────────────────────────────┘    │  │ │
+│  │   └──────────────────────────────────────────────────────────────┘  │ │
+│  │                                                                      │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                    │                                      │
+│                                    │ VPC Peering                          │
+│                                    ▼                                      │
+│  ┌─────────────────────────────────────────────────────────────────────┐ │
+│  │                          AIVEN VPC                                   │ │
+│  │  • PostgreSQL (Kiven product database)                              │ │
+│  │  • Kafka (agent events, audit trail, async ops)                     │ │
+│  │  • Valkey (sessions, rate limiting, cache)                          │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                           │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
+
+## 2.3 Container Diagram (C4 Level 2) — Customer Side
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                  CUSTOMER'S EKS CLUSTER                                   │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐ │
+│  │ NODE GROUP: kiven-db-nodes (Managed by Kiven)                       │ │
+│  │ Instance: r6g.medium–r6g.2xlarge (memory-optimized)                 │ │
+│  │ Taint: kiven.io/role=database:NoSchedule                            │ │
+│  │ Multi-AZ: primary in AZ-a, replica in AZ-b                         │ │
+│  │                                                                      │ │
+│  │   ┌── Namespace: kiven-system ──────────────────────────────────┐   │ │
+│  │   │ Kiven Agent (Go)         — gRPC → Kiven SaaS               │   │ │
+│  │   │ CNPG Operator            — manages PG clusters              │   │ │
+│  │   │ cert-manager (optional)  — TLS certificates                 │   │ │
+│  │   └─────────────────────────────────────────────────────────────┘   │ │
+│  │                                                                      │ │
+│  │   ┌── Namespace: kiven-databases ───────────────────────────────┐   │ │
+│  │   │                                                             │   │ │
+│  │   │  CNPG Cluster: pg-production-main                           │   │ │
+│  │   │  ├─ Pod: pg-production-main-1 (Primary, AZ-a)              │   │ │
+│  │   │  ├─ Pod: pg-production-main-2 (Replica, AZ-b)              │   │ │
+│  │   │  ├─ Pod: pg-production-main-3 (Replica, AZ-c)              │   │ │
+│  │   │  ├─ Service: pg-production-main-rw (read-write)            │   │ │
+│  │   │  ├─ Service: pg-production-main-ro (read-only)             │   │ │
+│  │   │  └─ Pooler: pg-production-main-pooler (PgBouncer)          │   │ │
+│  │   │                                                             │   │ │
+│  │   │  ScheduledBackup → S3: kiven-backups-{customer-id}         │   │ │
+│  │   │  NetworkPolicy: only kiven-databases + customer-app-ns      │   │ │
+│  │   └─────────────────────────────────────────────────────────────┘   │ │
+│  │                                                                      │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐ │
+│  │ NODE GROUP: customer-app-nodes (Managed by Customer)                │ │
+│  │ • Customer's application pods                                       │ │
+│  │ • Connect to: pg-production-main-pooler.kiven-databases.svc:5432   │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐ │
+│  │ AWS Resources (Managed by Kiven via cross-account IAM)              │ │
+│  │ • EBS gp3 volumes (encrypted, KMS)                                  │ │
+│  │ • S3 bucket: kiven-backups-{customer-id}                            │ │
+│  │ • IAM IRSA role: kiven-cnpg-backup-role                             │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                           │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+## 2.4 Core Services
+
+### Service Catalog
+
+| Service | Responsibility | Language | Priority |
+|---------|---------------|----------|----------|
+| **svc-api** | REST + GraphQL gateway, request routing | Go | P0 |
+| **svc-auth** | OIDC (Google/GitHub/SAML), RBAC, API keys, org/team model | Go | P0 |
+| **svc-provisioner** | **THE BRAIN** — Orchestrates full provisioning pipeline (nodes → storage → S3 → CNPG → PG) | Go | P0 |
+| **svc-infra** | AWS resource management in customer accounts (EC2, EBS, S3, IAM, KMS) | Go | P0 |
+| **svc-clusters** | Cluster lifecycle via provider interface (status, scale, upgrade, delete) | Go | P0 |
+| **svc-backups** | Backup/restore management, PITR, fork/clone, backup verification | Go | P0 |
+| **svc-monitoring** | Metrics ingestion from agents, DBA intelligence, alerts engine | Go | P0 |
+| **svc-users** | Database user/role management, permissions, pg_hba rules | Go | P0 |
+| **svc-agent-relay** | gRPC server, multiplexes all customer agent connections | Go | P0 |
+| **svc-yamleditor** | YAML generation, schema validation, diff engine, change history | Go | P0 |
+| **svc-migrations** | Import from Aiven/RDS/bare PG into Kiven-managed clusters | Go | P1 |
+| **svc-billing** | Stripe integration, usage tracking, per-cluster pricing | Go | P1 |
+| **svc-audit** | Immutable audit log of all operations on customer infra | Go | P1 |
+| **svc-notification** | Alerts via Slack, email, webhook, PagerDuty | Go | P1 |
+| **agent** | In-cluster binary — CNPG controller, PG stats, command executor, log aggregator | Go | P0 |
+
+### Provider/Plugin Architecture
+
+The core engine is **operator-agnostic**. Each data service is a **provider** implementing a standard Go interface. Phase 1 ships the CNPG provider only. Future providers (Strimzi, Redis, ECK) plug in without rewriting core services.
+
+```
+Core Engine (operator-agnostic)
+  ├── svc-provisioner → calls provider.Provision()
+  ├── svc-clusters    → calls provider.Scale(), provider.Status()
+  ├── svc-backups     → calls provider.Backup(), provider.Restore()
+  ├── svc-monitoring  → calls provider.CollectMetrics()
+  └── svc-users       → calls provider.CreateUser()
+        │
+        ▼
+  Provider Interface (Go interface)
+        │
+  ┌─────┴───────────────────────────────┐
+  │ CNPG Provider    (Phase 1 — PG)     │
+  │ Strimzi Provider (Phase 3 — Kafka)  │
+  │ Redis Provider   (Phase 3 — Redis)  │
+  │ ECK Provider     (Phase 3 — ES)     │
+  └─────────────────────────────────────┘
+```
+
+## 2.5 Data Flow — Provisioning
+
+```
+Customer clicks "Create Database"
+         │
+         ▼
+┌─── svc-api ───┐     ┌─── svc-auth ──┐
+│ Validate req  │────▶│ Check RBAC    │
+└───────┬───────┘     └───────────────┘
+        │
+        ▼
+┌─── svc-provisioner (THE BRAIN) ──────────────────────────────────────┐
+│                                                                       │
+│  1. svc-infra → AssumeRole → Create node group (kiven-db-nodes)     │
+│  2. svc-infra → AssumeRole → Create StorageClass (gp3, encrypted)   │
+│  3. svc-infra → AssumeRole → Create S3 bucket (backups)             │
+│  4. svc-infra → AssumeRole → Create IRSA role (CNPG → S3)          │
+│  5. agent    → Install CNPG operator (Helm)                          │
+│  6. agent    → Apply CNPG Cluster YAML (generated by svc-clusters)   │
+│  7. agent    → Apply PgBouncer Pooler YAML                           │
+│  8. agent    → Apply ScheduledBackup YAML                            │
+│  9. agent    → Apply NetworkPolicy YAML                              │
+│ 10. agent    → Wait for cluster healthy                              │
+│ 11. svc-users → Create initial database + user                       │
+│ 12. Return connection string to customer                              │
+│                                                                       │
+│  Status updates streamed via agent gRPC → svc-agent-relay             │
+│  Dashboard shows real-time provisioning progress                      │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+## 2.6 Data Flow — Steady State
+
+```
+┌─── Kiven Agent (in customer K8s) ─────────────────────────────┐
+│                                                                │
+│  CNPG Controller ──── watches Cluster/Backup/Pooler CRDs      │
+│  PG Stats Collector ─ pg_stat_statements, pg_stat_activity     │
+│  Log Aggregator ───── PG logs from all pods                    │
+│  Infra Reporter ───── node status, EBS usage, pod health       │
+│                                                                │
+│  Every 30s: streams metrics + status to svc-agent-relay        │
+│  On event: immediately reports (failover, backup done, error)  │
+└────────────────────────┬───────────────────────────────────────┘
+                         │ gRPC/mTLS (outbound only)
+                         ▼
+┌─── svc-agent-relay ───────────────────────────────────────────┐
+│  Multiplexes connections from all customer agents              │
+│  Routes events to: svc-monitoring, svc-clusters, svc-audit    │
+└───────────────────────────────────────────────────────────────┘
+                         │
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+   svc-monitoring   svc-clusters   svc-audit
+   (DBA intelligence, (status update) (immutable log)
+    alert engine)
+```
+
+## 2.7 Service Plans
+
+Each database is provisioned with a **plan** that determines compute, memory, storage, and HA configuration:
+
+| Plan | CPU | RAM | Storage | Instances | HA | Node Type | Use Case |
+|------|-----|-----|---------|-----------|-----|-----------|----------|
+| **Hobbyist** | 1 vCPU | 1 GB | 10 GB | 1 | No | t3.small | Testing, personal projects |
+| **Startup** | 2 vCPU | 4 GB | 50 GB | 2 | Yes | r6g.medium | Small apps, dev/staging |
+| **Business** | 4 vCPU | 16 GB | 100 GB | 3 | Yes | r6g.large | Production, medium traffic |
+| **Premium** | 8 vCPU | 32 GB | 500 GB | 3 | Yes | r6g.xlarge | High-performance, analytics |
+| **Custom** | User-defined | User-defined | User-defined | 1-5 | Configurable | Any | Specific requirements |
+
+Each plan includes:
+- Pre-tuned `postgresql.conf` (shared_buffers, work_mem, etc. sized for the plan)
+- Appropriate PgBouncer pool size and mode
+- Right backup frequency and retention
+- Resource limits and requests matching the node type
+
+Plans can be **upgraded or downgraded** at any time from the dashboard (triggers a rolling update via CNPG).
+
+## 2.8 Power Off / Power On
+
+Databases can be **paused** to eliminate compute costs while preserving data. This is a fundamental advantage of the "managed on your infra" model — something Aiven cannot offer because they own the infrastructure.
+
+### Power Off (Pause)
+
+```
+Customer clicks "Power Off"
+  │
+  ├─ 1. svc-clusters → agent: Delete CNPG Cluster CR
+  │     PVC reclaim policy = RETAIN → EBS volumes preserved
+  │
+  ├─ 2. CNPG pods terminated, K8s services removed
+  │     EBS volumes detached but retained in AWS
+  │
+  ├─ 3. svc-infra → AWS API: Scale node group to 0
+  │     No more EC2 cost
+  │
+  └─ 4. Dashboard: "Paused — Data safe, no compute cost"
+        S3 backups and EBS volumes remain
+```
+
+### Power On (Resume)
+
+```
+Customer clicks "Resume"
+  │
+  ├─ 1. svc-infra → AWS API: Scale node group back up
+  │     Wait for nodes ready (~2-3 min)
+  │
+  ├─ 2. svc-clusters → agent: Apply CNPG Cluster CR
+  │     References existing PVCs (same EBS volume IDs)
+  │
+  ├─ 3. CNPG starts PostgreSQL with existing data
+  │     Primary elected, replicas sync (~1-2 min)
+  │
+  └─ 4. Dashboard: "Running — Resumed"
+        Connection strings unchanged, total resume time ~3-5 min
+```
+
+### Scheduled Power Off/On
+
+Automate power schedules for non-production environments:
+- Example: Mon-Fri 8am-6pm ON, nights and weekends OFF
+- Savings: 60-70% on dev/staging compute costs
+- Configured via dashboard, API, CLI, or Terraform
+
+### Cost Impact
+
+| Scenario | Always On | Scheduled (10h/day, weekdays) | Savings |
+|----------|-----------|-------------------------------|---------|
+| Startup plan (2×r6g.medium) | ~$180/mo | ~$55/mo | 70% |
+| Business plan (3×r6g.large) | ~$450/mo | ~$140/mo | 69% |
+| Paused (storage only) | — | ~$10/mo | 94% |
+
+## 2.9 Two UX Modes
+
+### Simple Mode (Default) — "Aiven Experience"
+
+For developers who just need a database. Forms, sliders, buttons. No YAML visible.
+- Create database → pick plan → get connection string
+- Manage users, backups, config via UI forms
+- See metrics, alerts, logs in clean dashboards
+
+### Advanced Mode — "Lens Experience"
+
+For DevOps/Platform engineers who want full control. Like Lens for Kubernetes.
+- View the generated YAML for every resource (CNPG Cluster, Pooler, Backup, etc.)
+- Edit YAML directly in Monaco editor (VS Code-like) with CNPG schema validation
+- Diff view before applying changes
+- Change history (git-like timeline of all YAML changes)
+- Rollback to any previous YAML version
+- Toggle between modes at any time
 
 ---
 
-# 🌿 **PARTIE II.B — GIT STRATEGY**
+# PART III — DELIVERY MODEL
 
-## **Trunk-Based Development avec Cherry-Pick**
+## 3.1 Git Strategy
+
+**Trunk-Based Development with Cherry-Pick**
 
 ```
                     main (trunk)
@@ -224,1594 +474,435 @@
             │                       │
             ▼                       ▼
     maintenance/v1.x.x      maintenance/v2.x.x
-    (cherry-pick avec       (cherry-pick avec
+    (cherry-pick with       (cherry-pick with
      label: backport-v1)     label: backport-v2)
 ```
 
-### **Règles Git**
+| Branch | Usage | Policy |
+|--------|-------|--------|
+| `main` | Main trunk | All PRs merge here |
+| `maintenance/v*.x.x` | Version maintenance | Cherry-pick from main only |
+| `feature/*` | Development | Short-lived, merge to main |
 
-|| Branche | Usage | Politique |
-||---------|-------|-----------|
-|| `main` | Trunk principal | Tous les PRs mergent ici |
-|| `maintenance/v1.x.x` | Maintenance version 1 | Cherry-pick depuis main uniquement |
-|| `maintenance/v2.x.x` | Maintenance version 2 | Cherry-pick depuis main uniquement |
-|| `feature/*` | Développement | Short-lived, merge to main |
+## 3.2 GitOps Flow (Flux)
 
-### **Workflow Cherry-Pick**
+- **Centralized Flux**: Single instance managing all environments
+- **Kustomization/HelmRelease pattern**: Git + Kustomize/Helm generators
+- **Auto-reconcile**: Dev auto-reconcile, Staging/Prod manual approval
 
-1. **Développeur** crée un PR vers `main`
-2. **Développeur** ajoute le label `backport-v1` si le fix doit aller dans v1.x.x
-3. **CI** (après merge dans main) détecte le label et crée automatiquement un PR cherry-pick vers `maintenance/v1.x.x`
-4. **Reviewer** valide le cherry-pick PR
+## 3.3 Environments
 
-> **Principe :** Tout passe par `main` d'abord. Les branches de maintenance reçoivent uniquement des cherry-picks validés.
+| Environment | Account | Cluster | Sync Policy |
+|-------------|---------|---------|-------------|
+| **dev** | kiven-dev | eks-dev | Auto-sync |
+| **staging** | kiven-staging | eks-staging | Manual |
+| **prod** | kiven-prod | eks-prod | Manual + Approval |
 
----
+## 3.4 CI/CD & Bootstrap
 
-# 🗂️ **PARTIE III — ORGANISATION DES REPOSITORIES**
-
-## **3.1 Structure Complète**
-
-```
-github.com/localplus/
-
-══════════════════════════════════════════════════════════════════════════════
-TIER 0 — FOUNDATION (Platform Team ownership)
-══════════════════════════════════════════════════════════════════════════════
-
-bootstrap/
-├── layer-0/
-│   └── aws/
-│       └── README.md                    # Runbook: Create bootstrap IAM role
-├── layer-1/
-│   ├── foundation/
-│   │   ├── main.tf
-│   │   ├── networking.tf                # VPC, Subnets, NAT, VPC Peering Aiven
-│   │   ├── eks.tf                       # EKS cluster
-│   │   ├── iam.tf                       # IRSA, Workload Identity
-│   │   ├── kms.tf                       # Encryption keys
-│   │   └── outputs.tf
-│   ├── tests/
-│   │   ├── unit/                        # Terraform unit tests (terraform test)
-│   │   ├── compliance/                  # Checkov, tfsec, Regula
-│   │   └── integration/                 # Terratest
-│   └── backend.tf                       # S3 native locking
-└── docs/
-    └── RUNBOOK-BOOTSTRAP.md
-
-══════════════════════════════════════════════════════════════════════════════
-TIER 1 — PLATFORM (Platform Team ownership)
-══════════════════════════════════════════════════════════════════════════════
-
-platform-gitops/
-├── argocd/
-│   ├── install/                         # Helm values for ArgoCD
-│   └── applicationsets/
-│       ├── platform.yaml                # Sync platform-* repos
-│       └── services.yaml                # Sync svc-* repos (Git + Cluster generators)
-├── projects/                            # ArgoCD Projects (RBAC)
-└── README.md
-
-platform-networking/
-├── cilium/
-│   ├── values.yaml                      # Cilium Helm config
-│   └── policies/                        # ClusterNetworkPolicies
-├── gateway-api/
-│   ├── gateway-class.yaml
-│   ├── gateways/
-│   └── httproutes/
-└── README.md
-
-platform-observability/
-├── otel-collector/
-│   ├── daemonset.yaml                   # Node-level collection
-│   ├── deployment.yaml                  # Gateway collector
-│   └── config/
-│       ├── receivers.yaml
-│       ├── processors.yaml              # Cardinality filtering, PII scrubbing
-│       ├── exporters.yaml
-│       └── sampling.yaml                # Tail sampling config
-├── prometheus/
-│   ├── values.yaml
-│   ├── rules/                           # AlertRules, RecordingRules
-│   └── serviceMonitors/
-├── loki/
-│   ├── values.yaml
-│   └── retention-policies.yaml          # GDPR: 30 days max
-├── tempo/
-│   └── values.yaml
-├── pyroscope/                           # Continuous Profiling (APM)
-│   ├── values.yaml
-│   └── scrape-configs.yaml
-├── sentry/                              # Error Tracking (APM)
-│   ├── values.yaml
-│   ├── dsn-config.yaml
-│   └── alert-rules.yaml
-├── grafana/
-│   ├── values.yaml
-│   ├── dashboards/
-│   │   ├── platform/
-│   │   ├── services/
-│   │   └── apm/                         # APM-specific dashboards
-│   │       ├── service-overview.json
-│   │       ├── dependency-map.json
-│   │       ├── database-performance.json
-│   │       └── profiling-flamegraphs.json
-│   └── datasources/
-└── README.md
-
-platform-cache/
-├── valkey/
-│   ├── values.yaml                      # Helm config for Valkey
-│   ├── cluster-config.yaml
-│   └── monitoring/
-│       ├── servicemonitor.yaml
-│       └── alerts.yaml
-├── sdk/
-│   ├── python/                          # Cache SDK helpers
-│   │   ├── cache_client.py
-│   │   └── patterns.py                  # Cache-aside, write-through
-│   └── go/
-│       └── cache/
-└── README.md
-
-platform-gateway/
-├── apisix/
-│   ├── values.yaml                      # APISIX Helm config
-│   ├── routes/
-│   │   ├── v1/                          # API v1 routes
-│   │   └── v2/                          # API v2 routes (future)
-│   ├── plugins/
-│   │   ├── jwt-config.yaml
-│   │   ├── rate-limit-config.yaml
-│   │   └── cors-config.yaml
-│   └── consumers/                       # API consumers (partners, services)
-├── cloudflare/
-│   ├── terraform/
-│   │   ├── main.tf
-│   │   ├── dns.tf
-│   │   ├── tunnel.tf
-│   │   ├── waf.tf
-│   │   └── access.tf
-│   └── policies/
-│       ├── waf-rules.yaml
-│       └── access-policies.yaml
-├── cloudflared/
-│   ├── deployment.yaml                  # Tunnel daemon
-│   └── config.yaml
-└── README.md
-
-platform-security/
-├── vault/
-│   ├── policies/                        # Per-service policies
-│   ├── auth-methods/                    # Kubernetes auth
-│   └── secret-engines/
-├── external-secrets/
-│   ├── operator/
-│   └── cluster-secret-stores/
-├── kyverno/
-│   ├── cluster-policies/
-│   │   ├── require-labels.yaml
-│   │   ├── require-probes.yaml
-│   │   ├── require-resource-limits.yaml
-│   │   ├── restrict-privileged.yaml
-│   │   ├── require-image-signature.yaml # Supply chain
-│   │   └── mutate-default-sa.yaml
-│   └── policy-reports/
-├── supply-chain/
-│   ├── cosign/                          # Image signing config
-│   └── sbom/                            # Syft config
-├── audit/
-│   └── audit-policy.yaml                # K8s audit logging
-└── README.md
-
-══════════════════════════════════════════════════════════════════════════════
-TIER 2 — CONTRACTS (Shared ownership)
-══════════════════════════════════════════════════════════════════════════════
-
-contracts-proto/
-├── buf.yaml
-├── buf.gen.yaml
-├── localplus/
-│   ├── ledger/v1/
-│   │   ├── ledger.proto
-│   │   └── ledger_service.proto
-│   ├── wallet/v1/
-│   │   ├── wallet.proto
-│   │   └── wallet_service.proto
-│   └── common/v1/
-│       ├── money.proto
-│       └── pagination.proto
-└── README.md
-
-sdk-python/
-├── localplus/
-│   ├── clients/                         # Generated gRPC clients
-│   ├── telemetry/                       # OTel instrumentation helpers
-│   ├── testing/                         # Fixtures, factories
-│   └── security/                        # Vault client wrapper
-├── pyproject.toml
-└── README.md
-
-sdk-go/
-├── clients/
-├── telemetry/
-└── go.mod
-
-══════════════════════════════════════════════════════════════════════════════
-TIER 3 — DOMAIN SERVICES (Product Team ownership)
-══════════════════════════════════════════════════════════════════════════════
-
-svc-ledger/                              # TON LOCAL-PLUS ACTUEL
-├── src/
-│   └── app/
-│       ├── api/
-│       ├── domain/
-│       ├── infrastructure/
-│       └── main.py
-├── tests/
-│   ├── unit/                            # pytest, mocks
-│   ├── integration/                     # testcontainers
-│   ├── contract/                        # pact / grpc-testing
-│   └── conftest.py
-├── perf/
-│   ├── k6/
-│   │   ├── smoke.js
-│   │   ├── load.js
-│   │   └── stress.js
-│   └── scenarios/
-├── k8s/
-│   ├── base/
-│   │   ├── deployment.yaml
-│   │   ├── service.yaml
-│   │   ├── configmap.yaml
-│   │   ├── hpa.yaml
-│   │   ├── pdb.yaml
-│   │   └── kustomization.yaml
-│   └── overlays/
-│       ├── dev/
-│       ├── staging/
-│       └── prod/
-├── migrations/                          # Alembic
-├── Dockerfile
-├── Taskfile.yml
-└── README.md
-
-svc-wallet/                              # Même structure
-svc-merchant/                            # Même structure
-svc-giftcard/                            # Même structure
-svc-notification/                        # Même structure (+ Kafka consumer)
-
-══════════════════════════════════════════════════════════════════════════════
-TIER 4 — QUALITY ENGINEERING (Shared ownership)
-══════════════════════════════════════════════════════════════════════════════
-
-e2e-scenarios/
-├── scenarios/
-│   ├── earn-burn-flow.spec.ts
-│   ├── merchant-onboarding.spec.ts
-│   └── giftcard-purchase.spec.ts
-├── fixtures/
-├── playwright.config.ts
-└── README.md
-
-chaos-experiments/
-├── litmus/
-│   └── chaosengine/
-├── experiments/
-│   ├── pod-kill/
-│   ├── network-partition/
-│   ├── db-latency/
-│   └── kafka-broker-kill/
-└── README.md
-
-══════════════════════════════════════════════════════════════════════════════
-TIER 5 — DOCUMENTATION (Shared ownership)
-══════════════════════════════════════════════════════════════════════════════
-
-docs/
-├── adr/                                 # Architecture Decision Records
-│   ├── 001-modular-monolith-first.md
-│   ├── 002-aiven-managed-data.md
-│   ├── 003-cilium-over-calico.md
-│   └── ...
-├── runbooks/
-│   ├── incident-response.md
-│   ├── database-failover.md
-│   ├── kafka-recovery.md
-│   └── secret-rotation.md
-├── platform-contracts/
-│   ├── deployment-sla.md
-│   ├── observability-requirements.md
-│   └── security-baseline.md
-├── compliance/
-│   ├── gdpr/
-│   │   ├── data-retention-policy.md
-│   │   ├── right-to-erasure.md
-│   │   └── consent-management.md
-│   ├── pci-dss/
-│   │   ├── cardholder-data-flow.md
-│   │   └── encryption-requirements.md
-│   └── soc2/
-│       ├── access-control-policy.md
-│       └── incident-response-policy.md
-├── threat-models/
-│   ├── svc-ledger-stride.md
-│   └── platform-attack-surface.md
-└── onboarding/
-    ├── new-developer.md
-    └── new-service-checklist.md
-```
+> Detailed documentation: [bootstrap/BOOTSTRAP-GUIDE.md](bootstrap/BOOTSTRAP-GUIDE.md)
 
 ---
 
-# 🥚🐔 **PARTIE IV — BOOTSTRAP STRATEGY**
+# PART IV — REPOSITORY & OWNERSHIP MODEL
 
-## **4.1 Layer 0 — Manual Bootstrap (1x per AWS account)**
+## 4.1 Repository Tiers
 
-| Action | Commande/Outil | Output |
-|--------|---------------|--------|
-| Créer IAM Role pour Terraform CI/CD | AWS CLI | `arn:aws:iam::xxx:role/TerraformCI` |
-| Configurer OIDC pour GitHub Actions | AWS Console/CLI | GitHub peut assumer le role |
+| Tier | Repos | Description | Owner |
+|------|-------|-------------|-------|
+| **T0 — Foundation** | `bootstrap/` | AWS Landing Zone, Account Factory | Platform Team |
+| **T1 — Platform** | `platform-*` | GitOps, Networking, Security, Observability | Platform Team |
+| **T2 — Contracts** | `contracts-proto`, `sdk-*` | gRPC APIs, Go SDK, CLI | Platform + Backend |
+| **T3 — Core Services** | `svc-*` | Kiven backend services | Backend Team |
+| **T4 — Agent** | `agent/` | Customer-deployed agent | Agent Team |
+| **T5 — Frontend** | `dashboard/` | Next.js dashboard (Simple + Advanced modes) | Frontend Team |
+| **T6 — Providers** | `provider-*` | CNPG provider, Strimzi provider (future) | Backend Team |
+| **T7 — Quality** | `e2e-scenarios`, `chaos-*` | Tests, chaos engineering | QA + Platform |
+| **T8 — Documentation** | `docs/` | Centralized documentation | All Teams |
 
-**C'est TOUT. Le S3 backend est auto-créé par Terraform 1.10+**
+## 4.2 Ownership Matrix
 
-## **4.1.1 GitHub Actions — Reusable & Composite Workflows**
+| Tier | Owner Team | Approvers | Change Process |
+|------|------------|-----------|----------------|
+| **T0 — Foundation** | Platform | Platform Lead + Security | ADR + RFC required |
+| **T1 — Platform** | Platform | Platform Team (2 reviewers) | ADR if breaking change |
+| **T2 — Contracts** | Platform + Backend | Tech Lead | Buf breaking detection |
+| **T3 — Core Services** | Backend | Team Lead | Standard PR review |
+| **T4 — Agent** | Agent / Backend | Agent Lead + Security | Security review required |
+| **T5 — Frontend** | Frontend | Frontend Lead | Standard PR review |
+| **T6 — Providers** | Backend | Tech Lead | Provider interface compliance |
+| **T7 — Quality** | QA + Platform | QA Lead | Standard PR review |
+| **T8 — Documentation** | All | Tech Lead | Standard PR review |
 
-> **Note :** Utiliser des **reusable workflows** et **composite actions** pour standardiser les pipelines CI/CD.
+## 4.3 Repository Index
 
-- **Reusable workflows** : `.github/workflows/` partagés entre repos (build, test, deploy)
-- **Composite actions** : `.github/actions/` pour encapsuler des steps communs (setup-python, terraform-plan, etc.)
+### Tier 0 — Foundation
 
-## **4.2 Layer 1 — Foundation (Terraform)**
+| Repo | Description |
+|------|-------------|
+| `bootstrap/` | AWS Landing Zone, Account Factory, SCPs, SSO |
 
-| Ordre | Ressource | Dépendances |
-|-------|-----------|-------------|
-| 1 | VPC + Subnets | Aucune |
-| 2 | KMS Keys | Aucune |
-| 3 | EKS Cluster | VPC, KMS |
-| 4 | IRSA (IAM Roles for Service Accounts) | EKS |
-| 5 | VPC Peering avec Aiven | VPC, Aiven créé manuellement d'abord |
-| 6 | Outputs → Platform repos | Tous |
+### Tier 1 — Platform
 
-## **4.3 Layer 2 — Platform Bootstrap**
+| Repo | Description |
+|------|-------------|
+| `platform-gitops/` | Flux, Kustomizations, HelmReleases |
+| `platform-networking/` | Cilium, Gateway API |
+| `platform-observability/` | OTel, Prometheus, Loki, Tempo, Grafana |
+| `platform-security/` | Vault, External-Secrets, Kyverno |
 
-| Ordre | Action | Dépendance |
-|-------|--------|------------|
-| 1 | Install ArgoCD via Helm (1x) | EKS ready |
-| 2 | Apply App-of-Apps ApplicationSet | ArgoCD running |
-| 3 | ArgoCD syncs platform-* repos | Reconciliation automatique |
+### Tier 2 — Contracts
 
-**ArgoCD : Instance centralisée unique** (comme demandé)
+| Repo | Description |
+|------|-------------|
+| `contracts-proto/` | Protobuf definitions (agent ↔ SaaS, inter-service) |
+| `sdk-go/` | Go SDK for Kiven API |
+| `kiven-cli/` | CLI tool (`kiven clusters list`, `kiven backup trigger`) |
+| `terraform-provider-kiven/` | Terraform provider for Kiven |
 
-## **4.4 Layer 3+ — Application Services**
+### Tier 3 — Core Services
 
-ArgoCD ApplicationSets avec **Git Generator + Matrix Generator** découvrent automatiquement les services.
+| Repo | Description |
+|------|-------------|
+| `svc-api/` | REST + GraphQL gateway |
+| `svc-auth/` | Authentication, RBAC, API keys |
+| `svc-provisioner/` | Provisioning orchestrator (THE BRAIN) |
+| `svc-infra/` | AWS resource management in customer accounts |
+| `svc-clusters/` | Cluster lifecycle (CNPG management) |
+| `svc-backups/` | Backup/restore, PITR, fork/clone |
+| `svc-monitoring/` | Metrics, DBA intelligence, alerts |
+| `svc-users/` | Database user/role management |
+| `svc-agent-relay/` | gRPC server for agent connections |
+| `svc-yamleditor/` | YAML generation, validation, diff, history |
+| `svc-migrations/` | Import from Aiven/RDS/bare PG |
+| `svc-billing/` | Stripe billing |
+| `svc-audit/` | Immutable audit log |
+| `svc-notification/` | Alerts (Slack, email, webhook, PagerDuty) |
 
----
+### Tier 4 — Agent
 
-# 🧪 **PARTIE V — TESTING STRATEGY COMPLÈTE**
+| Repo | Description |
+|------|-------------|
+| `kiven-agent/` | In-cluster agent (CNPG controller, PG stats, command executor) |
+| `kiven-agent-helm/` | Helm chart for agent deployment |
 
-## **5.1 Terraform Testing**
+### Tier 5 — Frontend
 
-| Type | Outil | Quand | Bloquant |
-|------|-------|-------|----------|
-| **Format/Lint** | `terraform fmt`, `tflint` | Pre-commit | Oui |
-| **Security scan** | `tfsec`, `checkov` | PR | Oui |
-| **Compliance** | `regula`, `opa conftest`, [terraform-compliance](https://terraform-compliance.com/) | PR | Oui |
-| **Policy as Code** | HashiCorp Sentinel | PR | Oui |
-| **Unit tests** | `terraform test` (native 1.6+) | PR | Oui |
-| **Integration** | `terratest` | Nightly | Non |
-| **Drift detection** | `terraform plan` scheduled | Daily | Alerte |
+| Repo | Description |
+|------|-------------|
+| `dashboard/` | Next.js dashboard (Simple + Advanced mode) |
 
-## **5.2 Application Testing**
+### Tier 6 — Providers
 
-| Type | Localisation | Outil | Trigger | Bloquant |
-|------|--------------|-------|---------|----------|
-| **Unit** | `svc-*/tests/unit/` | pytest | Pre-commit, PR | Oui |
-| **Integration** | `svc-*/tests/integration/` | pytest + testcontainers | PR | Oui |
-| **Contract** | `svc-*/tests/contract/` | pact, grpc-testing | PR | Oui |
-| **Performance** | `svc-*/perf/` | k6 | Nightly, Pre-release | Non |
-| **E2E** | `e2e-scenarios/` | Playwright | Post-merge staging | Oui pour prod |
-| **Chaos** | `chaos-experiments/` | Litmus | Weekly | Non |
+| Repo | Description |
+|------|-------------|
+| `provider-cnpg/` | CloudNativePG provider (Phase 1) |
+| `provider-strimzi/` | Strimzi/Kafka provider (Phase 3 — future) |
+| `provider-redis/` | Redis Operator provider (Phase 3 — future) |
 
-## **5.3 TNR (Tests de Non-Régression)**
+### Tier 7 — Quality
 
-| Catégorie | Contenu | Fréquence |
-|-----------|---------|-----------|
-| **Critical Paths** | Earn → Balance Update → Notification | Nightly |
-| **Golden Master** | Snapshot des réponses API | Nightly |
-| **Compliance** | GDPR data retention, PCI encryption checks | Nightly |
-| **Security** | Kyverno policy audit, image signature verification | Nightly |
-
-## **5.4 Compliance Testing**
-
-| Standard | Test | Outil |
-|----------|------|-------|
-| **GDPR** | PII not in logs | OTel Collector scrubbing + log audit |
-| **GDPR** | Data retention < 30 days | Loki retention policy check |
-| **PCI-DSS** | mTLS enforced | Cilium policy audit |
-| **PCI-DSS** | Encryption at rest | AWS KMS audit |
-| **SOC2** | Audit logs present | CloudTrail + K8s audit logs check |
-| **SOC2** | Access control | Kyverno policy reports |
-
----
-
-# 🔐 **PARTIE VI — SECURITY ARCHITECTURE**
-
-## **6.1 Defense in Depth**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ LAYER 0: EDGE (Cloudflare)                                                  │
-│ • Cloudflare WAF (OWASP Core Ruleset, custom rules)                        │
-│ • Cloudflare DDoS Protection (L3/L4/L7, unlimited)                         │
-│ • Bot Management (JS challenge, CAPTCHA)                                   │
-│ • TLS 1.3 termination, HSTS enforced                                       │
-│ • Cloudflare Tunnel (no public origin IP)                                  │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ LAYER 1: API GATEWAY (APISIX)                                               │
-│ • JWT/API Key validation                                                   │
-│ • Rate limiting (fine-grained, per user/tenant)                            │
-│ • Request validation (JSON Schema)                                         │
-│ • Circuit breaker                                                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ LAYER 2: NETWORK                                                            │
-│ • VPC isolation (private subnets only for workloads)                        │
-│ • Cilium NetworkPolicies (default deny, explicit allow)                     │
-│ • VPC Peering Aiven (no public internet for DB/Kafka)                       │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ LAYER 3: IDENTITY & ACCESS                                                  │
-│ • IRSA (IAM Roles for Service Accounts) — no static credentials            │
-│ • Cilium mTLS (WireGuard) — pod-to-pod encryption                          │
-│ • Vault dynamic secrets — DB credentials rotated                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ LAYER 4: WORKLOAD                                                           │
-│ • Kyverno policies (no privileged, resource limits, probes required)       │
-│ • Image signature verification (Cosign)                                    │
-│ • Read-only root filesystem                                                │
-│ • Non-root containers                                                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ LAYER 5: DATA                                                               │
-│ • Encryption at rest (AWS KMS, Aiven native)                               │
-│ • Encryption in transit (mTLS)                                             │
-│ • PII scrubbing in logs (OTel processor)                                   │
-│ • Audit trail immutable (CloudTrail, K8s audit logs)                       │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## **6.2 Réponse à : "Commence simple, mais la dette technique ?"**
-
-**Le paradoxe :** Tu veux commencer simple mais avec GDPR/PCI-DSS/SOC2, tu ne peux PAS ignorer la sécurité.
-
-**La solution : Security Baseline dès Day 1, évolution par phases**
-
-| Phase | Ce qui est en place | Ce qui vient après |
-|-------|---------------------|-------------------|
-| **Day 1** | Cilium mTLS (zero config), Kyverno basic policies, Vault pour secrets | - |
-| **Month 3** | Image signing (Cosign), SBOM generation | - |
-| **Month 6** | SPIRE (si multi-cluster), Confidential Computing évaluation | - |
-
-**Pas de dette technique SI :**
-- mTLS dès le début (Cilium = zero effort)
-- Secrets dans Vault dès le début (pas de migration douloureuse)
-- Policies Kyverno dès le début (culture sécurité)
-
-**La vraie dette technique serait :**
-- Commencer sans mTLS → Migration massive plus tard
-- Secrets en ConfigMaps → Rotation impossible
-- Pas d'audit logs → Compliance failure
+| Repo | Description |
+|------|-------------|
+| `e2e-scenarios/` | End-to-end tests (provisioning, backup, failover) |
+| `chaos-experiments/` | Chaos Mesh experiments (node failure, network partition) |
 
 ---
 
-# 📊 **PARTIE VII — OBSERVABILITY ARCHITECTURE**
+# PART V — PLATFORM BASELINES
 
-## **7.1 Stack Self-Hosted (Coût Minimal)**
+## 5.1 Security Baseline
 
-| Composant | Outil | Coût | Retention |
-|-----------|-------|------|-----------|
-| **Metrics** | Prometheus | 0€ (self-hosted) | 15 jours local |
-| **Metrics long-term** | Thanos Sidecar → S3 | ~5€/mois S3 | 1 an |
-| **Logs** | Loki | 0€ (self-hosted) | 30 jours (GDPR) |
-| **Traces** | Tempo | 0€ (self-hosted) | 7 jours |
-| **Dashboards** | Grafana | 0€ (self-hosted) | N/A |
-| **Fallback logs** | CloudWatch Logs | Tier gratuit 5GB | 7 jours |
+**Defense in Depth**: 7 layers of security
 
-**Coût estimé : < 50€/mois** (principalement S3 pour Thanos)
+| Layer | Component | Protection |
+|-------|-----------|------------|
+| **Edge** | Cloudflare | WAF, DDoS, Bot protection |
+| **Gateway** | Cilium Gateway API | TLS termination, routing |
+| **Network** | Cilium | NetworkPolicies, default deny |
+| **Identity** | IRSA + Vault | Dynamic secrets, mTLS, OIDC |
+| **Workload** | Kyverno | Pod security, image signing |
+| **Data** | KMS + EBS encryption | Encryption at rest/transit |
+| **Customer Access** | Cross-account IAM + Audit | Least privilege, CloudTrail, revocable |
 
-## **7.2 Telemetry Pipeline**
+> Detailed documentation: [security/SECURITY-ARCHITECTURE.md](security/SECURITY-ARCHITECTURE.md)
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Applications   │     │  OTel Collector │     │   Backends      │
-│                 │     │                 │     │                 │
-│  • SDK Python   │────►│  • Receivers    │────►│  • Prometheus   │
-│  • Auto-instr   │     │  • Processors   │     │  • Loki         │
-│                 │     │  • Exporters    │     │  • Tempo        │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                               │
-                               │ Scrubbing
-                               ▼
-                        ┌─────────────────┐
-                        │ GDPR Compliant  │
-                        │ • No user_id    │
-                        │ • No PII        │
-                        │ • No PAN        │
-                        └─────────────────┘
-```
+## 5.2 Observability Baseline
 
-## **7.3 Cardinality Management**
+| Signal | Tool | Retention | Cost |
+|--------|------|-----------|------|
+| **Metrics** | Prometheus + Remote Write S3 | 15d local, 1y S3 | ~5 EUR/mo |
+| **Logs** | Loki | 30 days (GDPR) | Self-hosted |
+| **Traces** | Tempo | 7 days | Self-hosted |
+| **Profiling** | Pyroscope | 7 days | Self-hosted |
+| **Errors** | Sentry (self-hosted) | 30 days | Self-hosted |
 
-| Label | Action | Rationale |
-|-------|--------|-----------|
-| `user_id` | DROP | High cardinality, use traces |
-| `request_id` | DROP | Use trace_id instead |
-| `http.url` | DROP | URLs uniques = explosion |
-| `http.route` | KEEP | Templated, low cardinality |
-| `service.name` | KEEP | Essential |
-| `http.method` | KEEP | Low cardinality |
-| `http.status_code` | KEEP | Low cardinality |
+> Detailed documentation: [observability/OBSERVABILITY-GUIDE.md](observability/OBSERVABILITY-GUIDE.md)
 
-## **7.4 SLI/SLO/Error Budgets**
+## 5.3 Networking Baseline
 
-| Service | SLI | SLO | Error Budget |
-|---------|-----|-----|--------------|
-| **svc-ledger** | Availability | 99.9% | 43 min/mois |
-| **svc-ledger** | Latency P99 | < 200ms | N/A |
-| **svc-wallet** | Availability | 99.9% | 43 min/mois |
-| **Platform (ArgoCD, Prometheus)** | Availability | 99.5% | 3.6h/mois |
+| Component | Role | Configuration |
+|-----------|------|---------------|
+| **Cloudflare** | Edge, WAF, Tunnel | Pro tier |
+| **Cilium** | CNI, mTLS, Gateway API | WireGuard encryption |
+| **VPC Peering** | Aiven connectivity (Kiven product DB) | Private, no internet |
+| **Route53** | Private DNS, backup | Internal zones |
+| **Cross-Account** | Customer EKS access | IAM AssumeRole, kubeconfig |
 
-## **7.5 Alerting Strategy**
+> Detailed documentation: [networking/NETWORKING-ARCHITECTURE.md](networking/NETWORKING-ARCHITECTURE.md)
 
-| Severity | Exemple | Notification | On-call |
-|----------|---------|--------------|---------|
-| **P1 — Critical** | svc-ledger down | PagerDuty immediate | Wake up |
-| **P2 — High** | Error rate > 5% | Slack + PagerDuty 15min | Within 30min |
-| **P3 — Medium** | Latency P99 > 500ms | Slack | Business hours |
-| **P4 — Low** | Disk usage > 80% | Slack | Next day |
+## 5.4 Data Baseline
 
-## **7.6 APM (Application Performance Monitoring)**
+### Kiven Product Database (SaaS side)
 
-### **7.6.1 Stack APM**
+| Service | Provider | Purpose | Cost Estimate |
+|---------|----------|---------|---------------|
+| **PostgreSQL** | Aiven | Product DB (orgs, clusters, audit) | ~300 EUR/mo |
+| **Kafka** | Aiven | Agent events, async operations | ~400 EUR/mo |
+| **Valkey** | Aiven | Sessions, rate limiting, cache | ~150 EUR/mo |
 
-| Composant | Outil | Intégration | Usage |
-|-----------|-------|-------------|-------|
-| **Distributed Tracing** | Tempo + OTel | Auto-instrumentation Python/Go | Request flow, latency breakdown |
-| **Profiling** | Pyroscope (Grafana) | SDK intégré | CPU/Memory profiling continu |
-| **Error Tracking** | Sentry (self-hosted) | SDK Python/Go | Exception tracking, stack traces |
-| **Database APM** | pg_stat_statements | Prometheus exporter | Query performance |
-| **Real User Monitoring** | Grafana Faro | JavaScript SDK | Frontend performance (si applicable) |
+### Customer Databases (managed by Kiven)
 
-### **7.6.2 APM Pipeline**
+| Service | Technology | Where | Cost |
+|---------|-----------|-------|------|
+| **PostgreSQL** | CloudNativePG on EKS | Customer's AWS | Customer's AWS bill |
+| **Backups** | Barman → S3 | Customer's AWS | Customer's S3 costs |
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         APPLICATION LAYER                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │ OTel SDK     │  │ Pyroscope    │  │ Sentry SDK   │  │ pg_stat      │    │
-│  │ (Traces)     │  │ (Profiles)   │  │ (Errors)     │  │ (DB metrics) │    │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
-│         │                 │                 │                 │             │
-└─────────┼─────────────────┼─────────────────┼─────────────────┼─────────────┘
-          │                 │                 │                 │
-          ▼                 ▼                 ▼                 ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         COLLECTION LAYER                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │                    OTel Collector (Gateway)                          │   │
-│  │  • Receives: traces, metrics, logs                                   │   │
-│  │  • Processes: sampling, enrichment, PII scrubbing                    │   │
-│  │  • Exports: Tempo, Prometheus, Loki                                  │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         STORAGE & VISUALIZATION                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐            │
-│  │   Tempo    │  │ Pyroscope  │  │   Sentry   │  │  Grafana   │            │
-│  │  (Traces)  │  │ (Profiles) │  │  (Errors)  │  │ (Unified)  │            │
-│  └────────────┘  └────────────┘  └────────────┘  └────────────┘            │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+**Golden rule**: Kiven product DB and customer databases are **completely separate**. Customer data never touches Kiven's infrastructure.
 
-### **7.6.3 Instrumentation Standards**
-
-| Language | Auto-instrumentation | Manual Instrumentation | Frameworks supportés |
-|----------|---------------------|------------------------|---------------------|
-| **Python** | `opentelemetry-instrumentation` | `@tracer.start_as_current_span` | FastAPI, SQLAlchemy, httpx, grpcio |
-| **Go** | OTel contrib packages | `tracer.Start()` | gRPC, net/http, pgx |
-
-### **7.6.4 Sampling Strategy**
-
-| Environment | Head Sampling | Tail Sampling | Rationale |
-|-------------|---------------|---------------|-----------|
-| **Dev** | 100% | N/A | Full visibility pour debug |
-| **Staging** | 50% | Errors: 100% | Balance cost/visibility |
-| **Prod** | 10% | Errors: 100%, Slow: 100% (>500ms) | Cost optimization |
-
-### **7.6.5 APM Dashboards**
-
-| Dashboard | Métriques clés | Audience |
-|-----------|---------------|----------|
-| **Service Overview** | RPS, Error rate, Latency P50/P95/P99 | On-call |
-| **Dependency Map** | Service topology, inter-service latency | Platform team |
-| **Database Performance** | Query time, connections, deadlocks | Backend devs |
-| **Error Analysis** | Error count by type, affected users | Product team |
-| **Profiling Flame Graphs** | CPU hotspots, memory allocations | Performance team |
-
-### **7.6.6 Trace-to-Logs-to-Metrics Correlation**
-
-```
-┌─────────────────┐     trace_id     ┌─────────────────┐
-│     TRACES      │◄────────────────►│      LOGS       │
-│     (Tempo)     │                  │     (Loki)      │
-└────────┬────────┘                  └────────┬────────┘
-         │                                    │
-         │ Exemplars (trace_id in metrics)    │
-         │                                    │
-         ▼                                    ▼
-┌─────────────────────────────────────────────────────────┐
-│                    GRAFANA                               │
-│  • Click trace → See logs for that request              │
-│  • Click metric spike → Jump to exemplar trace          │
-│  • Click error log → Navigate to full trace             │
-└─────────────────────────────────────────────────────────┘
-```
-
-### **7.6.7 APM Alerting**
-
-| Alert | Condition | Severity | Action |
-|-------|-----------|----------|--------|
-| **High Error Rate** | Error rate > 1% for 5min | P2 | Investigate errors in Sentry |
-| **Latency Degradation** | P99 > 2x baseline for 10min | P2 | Check traces for slow spans |
-| **Database Slow Queries** | Query time P95 > 100ms | P3 | Analyze pg_stat_statements |
-| **Memory Leak Detected** | Memory growth > 10%/hour | P3 | Check Pyroscope profiles |
+> Detailed documentation: [data/DATA-ARCHITECTURE.md](data/DATA-ARCHITECTURE.md)
 
 ---
 
-# 💾 **PARTIE VIII — DATA ARCHITECTURE**
+# PART VI — TESTING & QUALITY
 
-## **8.1 Aiven Configuration**
+## 6.1 Test Pyramid
 
-| Service | Plan | Config | Coût estimé |
-|---------|------|--------|-------------|
-| **PostgreSQL** | Business-4 | Primary + Read Replica, 100GB | ~300€/mois |
-| **Kafka** | Business-4 | 3 brokers, 100GB retention | ~400€/mois |
-| **Valkey (Redis)** | Business-4 | 2 nodes, 10GB, HA | ~150€/mois |
+| Layer | Test Types | Frequency |
+|-------|-----------|-----------|
+| **Base** | Static analysis, linting (golangci-lint) | Pre-commit |
+| **Unit** | Service logic, provider interface | PR |
+| **Integration** | Agent ↔ CNPG, svc-infra ↔ AWS (LocalStack), DB (Testcontainers) | PR |
+| **Contract** | gRPC contracts (Buf), agent protocol | PR |
+| **E2E** | Full provisioning pipeline (kind + CNPG) | Nightly |
+| **Performance** | Load testing, provisioning time (k6) | Weekly |
+| **Chaos** | Node failure, agent disconnection, CNPG failover (Chaos Mesh) | Weekly |
 
-**Coût total Aiven estimé : ~850€/mois**
+## 6.2 Performance Targets
 
-## **8.2 Database Strategy**
+| Metric | Target | Alert |
+|--------|--------|-------|
+| **API Latency P50** | < 50ms | > 100ms |
+| **API Latency P95** | < 100ms | > 200ms |
+| **API Latency P99** | < 200ms | > 500ms |
+| **Error Rate** | < 0.1% | > 1% |
+| **Provisioning Time** | < 10min | > 15min |
+| **Agent Reconnection** | < 30s | > 60s |
+| **Backup Success Rate** | > 99.9% | < 99% |
 
-| Aspect | Choix | Rationale |
-|--------|-------|-----------|
-| **Replication** | Aiven managed (async) | RPO 1h acceptable |
-| **Backup** | Aiven automated hourly | RPO 1h |
-| **Failover** | Aiven automated | RTO < 15min |
-| **Connection** | VPC Peering (private) | PCI-DSS, no public internet |
-| **Pooling** | PgBouncer (Aiven built-in) | Connection efficiency |
-
-## **8.3 Schema Ownership**
-
-| Table | Owner Service | Access pattern |
-|-------|---------------|----------------|
-| `transactions` | svc-ledger | CRUD |
-| `ledger_entries` | svc-ledger | CRUD |
-| `wallets` | svc-wallet | CRUD |
-| `balance_snapshots` | svc-wallet | CRUD |
-| `merchants` | svc-merchant | CRUD |
-| `giftcards` | svc-giftcard | CRUD |
-
-**Règle : 1 table = 1 owner. Cross-service = gRPC ou Events, jamais JOIN.**
-
-## **8.4 Kafka Topics**
-
-| Topic | Producer | Consumers | Retention |
-|-------|----------|-----------|-----------|
-| `ledger.transactions.v1` | svc-ledger (Outbox) | svc-notification, svc-analytics | 7 jours |
-| `wallet.balance-updated.v1` | svc-wallet | svc-analytics | 7 jours |
-| `merchant.onboarded.v1` | svc-merchant | svc-notification | 7 jours |
-
-## **8.5 Cache Architecture (Valkey/Redis)**
-
-### **8.5.1 Stack Cache**
-
-| Composant | Outil | Hébergement | Coût estimé |
-|-----------|-------|-------------|-------------|
-| **Cache primaire** | Valkey (Redis-compatible) | Aiven for Caching | ~150€/mois |
-| **Cache local (L1)** | Python `cachetools` / Go `bigcache` | In-memory | 0€ |
-
-> **Note :** Valkey est le fork open-source de Redis, maintenu par la Linux Foundation. Aiven supporte Valkey nativement.
-
-### **8.5.2 Cache Topology**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MULTI-LAYER CACHE                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ L1 — LOCAL CACHE (per pod)                                          │    │
-│  │ • TTL: 30s - 5min                                                   │    │
-│  │ • Size: 100MB max per pod                                           │    │
-│  │ • Use case: Hot data, config, user sessions                         │    │
-│  └───────────────────────────────┬─────────────────────────────────────┘    │
-│                                  │ Cache miss                               │
-│                                  ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ L2 — DISTRIBUTED CACHE (Valkey cluster)                             │    │
-│  │ • TTL: 5min - 24h                                                   │    │
-│  │ • Size: 10GB                                                        │    │
-│  │ • Use case: Shared state, rate limits, session store                │    │
-│  └───────────────────────────────┬─────────────────────────────────────┘    │
-│                                  │ Cache miss                               │
-│                                  ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ L3 — DATABASE (PostgreSQL)                                          │    │
-│  │ • Source of truth                                                   │    │
-│  │ • Write-through pour updates                                        │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **8.5.3 Cache Strategies par Use Case**
-
-| Use Case | Strategy | TTL | Invalidation |
-|----------|----------|-----|--------------|
-| **Wallet Balance** | Cache-aside (read) | 30s | Event-driven (Kafka) |
-| **Merchant Config** | Read-through | 5min | TTL + Manual |
-| **Rate Limiting** | Write-through | Sliding window | Auto-expire |
-| **Session Data** | Write-through | 24h | Explicit logout |
-| **Gift Card Catalog** | Cache-aside | 15min | Event-driven |
-| **Feature Flags** | Read-through | 1min | Config push |
-
-### **8.5.4 Cache Patterns Implementation**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CACHE-ASIDE PATTERN                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. Application checks cache                                                 │
-│  2. If HIT → return cached data                                             │
-│  3. If MISS → query database                                                │
-│  4. Store result in cache with TTL                                          │
-│  5. Return data to caller                                                   │
-│                                                                              │
-│  ┌─────────┐    GET     ┌─────────┐                                         │
-│  │   App   │───────────►│  Cache  │                                         │
-│  └────┬────┘            └────┬────┘                                         │
-│       │                      │ MISS                                         │
-│       │    SELECT            ▼                                              │
-│       └─────────────────►┌─────────┐                                        │
-│                          │   DB    │                                        │
-│                          └─────────┘                                        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         WRITE-THROUGH PATTERN                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. Application writes to cache AND database atomically                     │
-│  2. Cache is always consistent with database                                │
-│                                                                              │
-│  ┌─────────┐   SET+TTL   ┌─────────┐                                        │
-│  │   App   │────────────►│  Cache  │                                        │
-│  └────┬────┘             └─────────┘                                        │
-│       │                                                                      │
-│       │   INSERT/UPDATE                                                      │
-│       └─────────────────►┌─────────┐                                        │
-│                          │   DB    │                                        │
-│                          └─────────┘                                        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **8.5.5 Cache Invalidation Strategy**
-
-| Trigger | Méthode | Use Case |
-|---------|---------|----------|
-| **TTL Expiry** | Automatic | Default pour toutes les clés |
-| **Event-driven** | Kafka consumer | Wallet balance après transaction |
-| **Explicit Delete** | API call | Admin actions, config updates |
-| **Pub/Sub** | Valkey PUBLISH | Real-time invalidation cross-pods |
-
-### **8.5.6 Cache Key Naming Convention**
-
-```
-{service}:{entity}:{id}:{version}
-
-Exemples:
-  wallet:balance:user_123:v1
-  merchant:config:merchant_456:v1
-  giftcard:catalog:category_active:v1
-  ratelimit:api:user_123:minute
-  session:auth:session_abc123
-```
-
-### **8.5.7 Cache Metrics & Monitoring**
-
-| Metric | Seuil alerte | Action |
-|--------|--------------|--------|
-| **Hit Rate** | < 80% | Revoir TTL, préchargement |
-| **Latency P99** | > 10ms | Check network, cluster size |
-| **Memory Usage** | > 80% | Eviction analysis, scale up |
-| **Evictions/sec** | > 100 | Augmenter cache size |
-| **Connection Errors** | > 0 | Check connectivity, pooling |
-
-## **8.6 Queueing & Background Jobs**
-
-### **8.6.1 Queueing Architecture Overview**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         QUEUEING ARCHITECTURE                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ TIER 1 — EVENT STREAMING (Kafka)                                    │    │
-│  │ • Use case: Event-driven architecture, CDC, audit logs              │    │
-│  │ • Pattern: Pub/Sub, Event Sourcing                                  │    │
-│  │ • Retention: 7 jours                                                │    │
-│  │ • Ordering: Per-partition                                           │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ TIER 2 — TASK QUEUE (Valkey + Python Dramatiq/ARQ)                  │    │
-│  │ • Use case: Background jobs, async processing                       │    │
-│  │ • Pattern: Producer/Consumer, Work Queue                            │    │
-│  │ • Features: Retries, priorities, scheduling                         │    │
-│  │ • Durability: Redis persistence                                     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ TIER 3 — SCHEDULED JOBS (Kubernetes CronJobs)                       │    │
-│  │ • Use case: Batch processing, reports, cleanup                      │    │
-│  │ • Pattern: Time-triggered execution                                 │    │
-│  │ • Managed: K8s native                                               │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **8.6.2 Kafka vs Task Queue — Decision Matrix**
-
-| Critère | Kafka | Task Queue (Valkey) |
-|---------|-------|---------------------|
-| **Message Ordering** | ✅ Per-partition | ❌ Best effort |
-| **Message Replay** | ✅ Retention-based | ❌ Non |
-| **Priority Queues** | ❌ Non natif | ✅ Oui |
-| **Delayed Messages** | ❌ Non natif | ✅ Oui |
-| **Dead Letter Queue** | ✅ Configurable | ✅ Intégré |
-| **Exactly-once** | ✅ Avec idempotency | ❌ At-least-once |
-| **Throughput** | 🚀 Très élevé | 📈 Élevé |
-| **Use Case** | Events, CDC, Streaming | Jobs, Tasks, Async work |
-
-### **8.6.3 Task Queue Stack**
-
-| Composant | Outil | Rôle |
-|-----------|-------|------|
-| **Task Framework** | Dramatiq (Python) / Asynq (Go) | Task definition, execution |
-| **Broker** | Valkey (Redis-compatible) | Message storage, routing |
-| **Result Backend** | Valkey | Task results, status |
-| **Scheduler** | APScheduler / Dramatiq-crontab | Periodic tasks |
-| **Monitoring** | Dramatiq Dashboard / Prometheus | Task metrics |
-
-### **8.6.4 Task Queue Patterns**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         TASK PROCESSING FLOW                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Producer                    Broker                    Workers              │
-│  ┌─────────┐               ┌─────────┐               ┌─────────┐            │
-│  │ svc-*   │──── enqueue ──►│ Valkey  │◄── poll ─────│ Worker  │            │
-│  │ API     │               │         │               │ Pods    │            │
-│  └─────────┘               │ Queues: │               └────┬────┘            │
-│                            │ • high  │                    │                 │
-│                            │ • default│                   │ execute         │
-│                            │ • low   │                    ▼                 │
-│                            │ • dlq   │              ┌─────────┐             │
-│                            └─────────┘              │  Task   │             │
-│                                                     │ Handler │             │
-│                                                     └─────────┘             │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **8.6.5 Queue Definitions**
-
-| Queue | Priority | Workers | Use Cases |
-|-------|----------|---------|-----------|
-| **critical** | P0 | 5 | Transaction rollbacks, fraud alerts |
-| **high** | P1 | 10 | Email confirmations, balance updates |
-| **default** | P2 | 20 | Notifications, analytics events |
-| **low** | P3 | 5 | Reports, cleanup, batch exports |
-| **scheduled** | N/A | 3 | Cron-like scheduled tasks |
-| **dead-letter** | N/A | 1 | Failed tasks investigation |
-
-### **8.6.6 Retry Strategy**
-
-| Retry Policy | Configuration | Use Case |
-|--------------|---------------|----------|
-| **Exponential Backoff** | base=1s, max=1h, multiplier=2 | API calls, external services |
-| **Fixed Interval** | interval=30s, max_retries=5 | Database operations |
-| **No Retry** | max_retries=0 | Idempotent operations |
-
-```
-Retry Timeline (Exponential):
-  Attempt 1: immediate
-  Attempt 2: +1s
-  Attempt 3: +2s
-  Attempt 4: +4s
-  Attempt 5: +8s
-  ...
-  Attempt N: move to DLQ
-```
-
-### **8.6.7 Dead Letter Queue (DLQ) Handling**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         DLQ WORKFLOW                                         │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  1. Task fails after max retries                                            │
-│  2. Task moved to DLQ with metadata:                                        │
-│     • Original queue                                                        │
-│     • Failure reason                                                        │
-│     • Stack trace                                                           │
-│     • Attempt count                                                         │
-│     • Timestamp                                                             │
-│  3. Alert sent to Slack (P3)                                                │
-│  4. On-call investigates                                                    │
-│  5. Options:                                                                │
-│     a) Fix bug → Replay task                                                │
-│     b) Manual resolution → Delete from DLQ                                  │
-│     c) Archive for audit                                                    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **8.6.8 Scheduled Jobs (CronJobs)**
-
-| Job | Schedule | Service | Description |
-|-----|----------|---------|-------------|
-| **balance-reconciliation** | `0 2 * * *` | svc-wallet | Daily balance verification |
-| **expired-giftcards** | `0 0 * * *` | svc-giftcard | Mark expired cards |
-| **analytics-rollup** | `0 */6 * * *` | svc-analytics | 6-hourly aggregation |
-| **log-cleanup** | `0 3 * * 0` | platform | Weekly log rotation |
-| **backup-verification** | `0 4 * * *` | platform | Daily backup integrity check |
-| **compliance-report** | `0 6 1 * *` | platform | Monthly compliance export |
-
-### **8.6.9 Task Queue Monitoring**
-
-| Metric | Seuil alerte | Action |
-|--------|--------------|--------|
-| **Queue Depth** | > 1000 tasks | Scale workers |
-| **Processing Time P95** | > 30s | Optimize task, check resources |
-| **Failure Rate** | > 5% | Investigate DLQ, check dependencies |
-| **DLQ Size** | > 10 tasks | Immediate investigation |
-| **Worker Availability** | < 50% | Check pod health, scale up |
+> Detailed documentation: [testing/TESTING-STRATEGY.md](testing/TESTING-STRATEGY.md)
 
 ---
 
-# 🌐 **PARTIE IX — NETWORKING ARCHITECTURE**
+# PART VII — RESILIENCE & DR
 
-## **9.1 VPC Design**
+## 7.1 Failure Modes
 
-| CIDR | Usage |
-|------|-------|
-| 10.0.0.0/16 | VPC Principal |
-| 10.0.0.0/20 | Private Subnets (Workloads) |
-| 10.0.16.0/20 | Private Subnets (Data) |
-| 10.0.32.0/20 | Public Subnets (NAT, LB) |
-
-## **9.2 Traffic Flow**
-
-| Flow | Path | Encryption |
-|------|------|------------|
-| Internet → Services | ALB → Cilium Gateway → Pod | TLS + mTLS |
-| Service → Service | Pod → Pod (Cilium) | mTLS (WireGuard) |
-| Service → Aiven | VPC Peering | TLS |
-| Service → AWS (S3, KMS) | VPC Endpoints | TLS |
-
-## **9.3 Gateway API Configuration**
-
-| Resource | Purpose |
-|----------|---------|
-| **GatewayClass** | Cilium implementation |
-| **Gateway** | HTTPS listener, TLS termination |
-| **HTTPRoute** | Routing vers services (path-based) |
-
-## **9.4 Network Policies (Default Deny)**
-
-| Policy | Effect |
-|--------|--------|
-| Default deny all | Aucun trafic sauf explicite |
-| Allow intra-namespace | Services même namespace peuvent communiquer |
-| Allow specific cross-namespace | svc-ledger → svc-wallet explicite |
-| Allow egress Aiven | Services → VPC Peering range only |
-| Allow egress AWS endpoints | Services → VPC Endpoints only |
-
----
-
-# 🌍 **PARTIE IX.B — EDGE, CDN & CLOUDFLARE**
-
-## **9.5 Cloudflare Architecture**
-
-### **9.5.1 Pourquoi Cloudflare ?**
-
-| Critère | Cloudflare | AWS CloudFront + WAF | Verdict |
-|---------|------------|---------------------|---------|
-| **Coût** | Free tier généreux | Payant dès le début | ✅ Cloudflare |
-| **WAF** | Gratuit (règles de base) | ~30€/mois minimum | ✅ Cloudflare |
-| **DDoS** | Inclus (unlimited) | AWS Shield Standard gratuit | ≈ Égal |
-| **SSL/TLS** | Gratuit, auto-renew | ACM gratuit | ≈ Égal |
-| **CDN** | 300+ PoPs, gratuit | Payant au GB | ✅ Cloudflare |
-| **DNS** | Gratuit, très rapide | Route53 ~0.50€/zone | ✅ Cloudflare |
-| **Zero Trust** | Gratuit jusqu'à 50 users | Cognito + ALB payant | ✅ Cloudflare |
-| **Terraform** | Provider officiel | Provider officiel | ≈ Égal |
-
-> **Décision :** Cloudflare en front, AWS en backend. Best of both worlds.
-
-### **9.5.2 Architecture Edge-to-Origin**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              INTERNET                                        │
-│                           (End Users)                                        │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         CLOUDFLARE EDGE                                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ LAYER 1: DNS                                                         │    │
-│  │ • Authoritative DNS (localplus.io)                                  │    │
-│  │ • DNSSEC enabled                                                    │    │
-│  │ • Geo-routing (future multi-region)                                 │    │
-│  │ • Health checks → automatic failover                                │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ LAYER 2: DDoS Protection                                            │    │
-│  │ • Layer 3/4 DDoS mitigation (automatic, unlimited)                  │    │
-│  │ • Layer 7 DDoS mitigation                                           │    │
-│  │ • Rate limiting rules                                               │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ LAYER 3: WAF (Web Application Firewall)                             │    │
-│  │ • OWASP Core Ruleset (free managed rules)                           │    │
-│  │ • Custom rules (rate limit, geo-block, bot score)                   │    │
-│  │ • Challenge pages (CAPTCHA, JS challenge)                           │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ LAYER 4: SSL/TLS                                                    │    │
-│  │ • Edge certificates (auto-issued, free)                             │    │
-│  │ • Full (strict) mode → Origin certificate                           │    │
-│  │ • TLS 1.3 only, HSTS enabled                                        │    │
-│  │ • Automatic HTTPS rewrites                                          │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ LAYER 5: CDN & Caching                                              │    │
-│  │ • Static assets caching (JS, CSS, images)                           │    │
-│  │ • API responses: Cache-Control headers                              │    │
-│  │ • Tiered caching (edge → regional → origin)                         │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ LAYER 6: Cloudflare Tunnel (Argo Tunnel)                            │    │
-│  │ • No public IP needed on origin                                     │    │
-│  │ • Encrypted tunnel to Cloudflare edge                               │    │
-│  │ • cloudflared daemon in K8s                                         │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    │ Cloudflare Tunnel (encrypted)
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AWS EKS CLUSTER                                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ cloudflared (Deployment)                                            │    │
-│  │ • Runs in platform namespace                                        │    │
-│  │ • Connects to Cloudflare edge                                       │    │
-│  │ • Routes traffic to internal services                               │    │
-│  └──────────────────────────────┬──────────────────────────────────────┘    │
-│                                 │                                            │
-│                                 ▼                                            │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ API Gateway (APISIX) or Cilium Gateway                              │    │
-│  │ • Internal routing                                                  │    │
-│  │ • Rate limiting (L7)                                                │    │
-│  │ • Authentication                                                    │    │
-│  └──────────────────────────────┬──────────────────────────────────────┘    │
-│                                 │                                            │
-│                                 ▼                                            │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ Application Services                                                │    │
-│  │ • svc-ledger, svc-wallet, etc.                                     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **9.5.3 Cloudflare Services Configuration**
-
-| Service | Plan | Configuration | Coût |
-|---------|------|---------------|------|
-| **DNS** | Free | Authoritative, DNSSEC, proxy enabled | 0€ |
-| **CDN** | Free | Cache everything, tiered caching | 0€ |
-| **SSL/TLS** | Free | Full (strict), TLS 1.3, edge certs | 0€ |
-| **WAF** | Free | Managed ruleset, 5 custom rules | 0€ |
-| **DDoS** | Free | L3/L4/L7 protection, unlimited | 0€ |
-| **Bot Management** | Free | Basic bot score, JS challenge | 0€ |
-| **Rate Limiting** | Free | 1 rule (10K req/month free) | 0€ |
-| **Tunnel** | Free | Unlimited tunnels, cloudflared | 0€ |
-| **Access** | Free | Zero Trust, 50 users free | 0€ |
-
-**Coût Cloudflare total : 0€** (Free tier suffisant pour démarrer)
-
-### **9.5.4 DNS Configuration**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         DNS RECORDS — localplus.io                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  TYPE    NAME                CONTENT                      PROXY   TTL       │
-│  ────────────────────────────────────────────────────────────────────────   │
-│  A       @                   Cloudflare Tunnel            ☁️ ON   Auto      │
-│  CNAME   www                 @                            ☁️ ON   Auto      │
-│  CNAME   api                 tunnel-xxx.cfargotunnel.com  ☁️ ON   Auto      │
-│  CNAME   grafana             tunnel-xxx.cfargotunnel.com  ☁️ ON   Auto      │
-│  CNAME   argocd              tunnel-xxx.cfargotunnel.com  ☁️ ON   Auto      │
-│  TXT     @                   "v=spf1 include:_spf..."     ☁️ OFF  Auto      │
-│  TXT     _dmarc              "v=DMARC1; p=reject..."      ☁️ OFF  Auto      │
-│  MX      @                   mail provider                ☁️ OFF  Auto      │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### **9.5.5 WAF Rules Strategy**
-
-| Rule Set | Type | Action | Purpose |
-|----------|------|--------|---------|
-| **OWASP Core** | Managed | Block | SQLi, XSS, LFI, RFI protection |
-| **Cloudflare Managed** | Managed | Block | Zero-day, emerging threats |
-| **Geo-Block** | Custom | Block | Block high-risk countries (optional) |
-| **Rate Limit API** | Custom | Challenge | > 100 req/min per IP on /api/* |
-| **Bot Score < 30** | Custom | Challenge | Likely bot traffic |
-| **Known Bad ASNs** | Custom | Block | Hosting providers, VPNs (optional) |
-
-### **9.5.6 SSL/TLS Configuration**
-
-| Setting | Value | Rationale |
-|---------|-------|-----------|
-| **SSL Mode** | Full (strict) | Origin has valid cert |
-| **Minimum TLS** | 1.2 | PCI-DSS compliance |
-| **TLS 1.3** | Enabled | Performance + security |
-| **HSTS** | Enabled (max-age=31536000) | Force HTTPS |
-| **Always Use HTTPS** | On | Redirect HTTP → HTTPS |
-| **Automatic HTTPS Rewrites** | On | Fix mixed content |
-| **Origin Certificate** | Cloudflare Origin CA | 15-year validity, free |
-
-### **9.5.7 Cloudflare Tunnel Architecture**
-
-| Composant | Rôle | Déploiement |
-|-----------|------|-------------|
-| **cloudflared daemon** | Agent tunnel, connexion sécurisée vers Cloudflare | 2+ replicas, namespace platform |
-| **Tunnel credentials** | Secret d'authentification tunnel | Vault / External-Secrets |
-| **Tunnel config** | Routing rules vers services internes | ConfigMap |
-| **Health checks** | Vérification disponibilité tunnel | Cloudflare dashboard |
-
-**Avantages Cloudflare Tunnel :**
-- Pas d'IP publique exposée sur l'origin
-- Connexion outbound uniquement (pas de firewall inbound)
-- Encryption de bout en bout
-- Failover automatique entre replicas
-
-### **9.5.8 Cloudflare Access (Zero Trust)**
-
-| Resource | Policy | Authentication |
-|----------|--------|----------------|
-| **grafana.localplus.io** | Team only | GitHub SSO |
-| **argocd.localplus.io** | Team only | GitHub SSO |
-| **api.localplus.io/admin** | Admin only | GitHub SSO + MFA |
-| **api.localplus.io/*** | Public | No auth (application handles) |
-
-### **9.5.9 Infrastructure as Code (Terraform)**
-
-| Ressource Terraform | Description | Module/Provider |
-|---------------------|-------------|-----------------|
-| **cloudflare_zone** | Zone DNS principale | cloudflare/cloudflare |
-| **cloudflare_record** | Records DNS (A, CNAME, TXT) | cloudflare/cloudflare |
-| **cloudflare_tunnel** | Configuration tunnel | cloudflare/cloudflare |
-| **cloudflare_ruleset** | WAF rules, rate limiting | cloudflare/cloudflare |
-| **cloudflare_access_application** | Zero Trust apps | cloudflare/cloudflare |
-| **cloudflare_access_policy** | Policies d'accès | cloudflare/cloudflare |
-
-> **Note :** Toute la configuration Cloudflare est gérée via Terraform dans le repo `platform-gateway/cloudflare/terraform/`
-
-### **9.5.10 Cloudflare Monitoring & Analytics**
-
-| Metric | Source | Dashboard |
-|--------|--------|-----------|
-| **Requests** | Cloudflare Analytics | Grafana (API) |
-| **Cache Hit Ratio** | Cloudflare Analytics | Grafana |
-| **WAF Events** | Cloudflare Security Events | Grafana + Alerts |
-| **Bot Score Distribution** | Cloudflare Analytics | Grafana |
-| **Origin Response Time** | Cloudflare Analytics | Grafana |
-| **DDoS Attacks** | Cloudflare Security Center | Email alerts |
-
-### **9.5.11 Route53 — DNS Interne & Backup**
-
-| Use Case | Solution | Configuration |
-|----------|----------|---------------|
-| **DNS Public (Primary)** | Cloudflare | Authoritative pour `localplus.io` |
-| **DNS Public (Backup)** | Route53 | Secondary zone, sync via AXFR |
-| **DNS Privé (Internal)** | Route53 Private Hosted Zones | `*.internal.localplus.io` |
-| **Service Discovery** | Route53 + Cloud Map | Résolution services internes |
-| **Health Checks** | Route53 Health Checks | Failover automatique si Cloudflare down |
-
-**Architecture DNS Hybride :**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         DNS ARCHITECTURE                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  EXTERNAL TRAFFIC                          INTERNAL TRAFFIC                  │
-│  ─────────────────                         ─────────────────                 │
-│                                                                              │
-│  ┌─────────────────┐                       ┌─────────────────┐              │
-│  │ Cloudflare DNS  │                       │ Route53 Private │              │
-│  │  (Primary)      │                       │ Hosted Zone     │              │
-│  │                 │                       │                 │              │
-│  │ localplus.io    │                       │ internal.       │              │
-│  │ api.localplus.io│                       │ localplus.io    │              │
-│  └────────┬────────┘                       └────────┬────────┘              │
-│           │                                         │                        │
-│           │ Failover                                │ VPC DNS                │
-│           ▼                                         ▼                        │
-│  ┌─────────────────┐                       ┌─────────────────┐              │
-│  │ Route53 Public  │                       │ EKS CoreDNS     │              │
-│  │  (Backup)       │                       │ + Cloud Map     │              │
-│  │                 │                       │                 │              │
-│  │ Health checks   │                       │ svc-*.svc.      │              │
-│  │ Failover ready  │                       │ cluster.local   │              │
-│  └─────────────────┘                       └─────────────────┘              │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Route53 Feature | Use Case Local-Plus |
-|-----------------|---------------------|
-| **Private Hosted Zones** | Résolution DNS interne VPC, pas d'exposition internet |
-| **Health Checks** | Vérification santé endpoints, failover automatique |
-| **Alias Records** | Pointage vers ALB/NLB sans IP hardcodée |
-| **Geolocation Routing** | Future multi-région, routage par géographie |
-| **Failover Routing** | Backup si Cloudflare indisponible |
-| **Weighted Routing** | Canary deployments, A/B testing |
-
-### **9.5.12 Vision Multi-Cloud**
-
-> **Objectif :** L'architecture edge (Cloudflare) et API Gateway (APISIX) sont **cloud-agnostic** et peuvent router vers plusieurs cloud providers.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MULTI-CLOUD ARCHITECTURE (Future)                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│                         CLOUDFLARE EDGE                                      │
-│                    (Global Load Balancing)                                   │
-│                              │                                               │
-│              ┌───────────────┼───────────────┐                              │
-│              │               │               │                              │
-│              ▼               ▼               ▼                              │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐                   │
-│  │  AWS (Primary)│  │  GCP (Future) │  │ Azure (Future)│                   │
-│  │  eu-west-1    │  │  europe-west1 │  │ westeurope    │                   │
-│  │               │  │               │  │               │                   │
-│  │  ┌─────────┐  │  │  ┌─────────┐  │  │  ┌─────────┐  │                   │
-│  │  │ APISIX  │  │  │  │ APISIX  │  │  │  │ APISIX  │  │                   │
-│  │  │ Gateway │  │  │  │ Gateway │  │  │  │ Gateway │  │                   │
-│  │  └────┬────┘  │  │  └────┬────┘  │  │  └────┬────┘  │                   │
-│  │       │       │  │       │       │  │       │       │                   │
-│  │  ┌────┴────┐  │  │  ┌────┴────┐  │  │  ┌────┴────┐  │                   │
-│  │  │Services │  │  │  │Services │  │  │  │Services │  │                   │
-│  │  └─────────┘  │  │  └─────────┘  │  │  └─────────┘  │                   │
-│  └───────────────┘  └───────────────┘  └───────────────┘                   │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │                    AIVEN (Multi-Cloud Data Layer)                   │    │
-│  │  • PostgreSQL avec réplication cross-cloud                         │    │
-│  │  • Kafka avec MirrorMaker cross-cloud                              │    │
-│  │  • Valkey avec réplication                                         │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Composant | Multi-Cloud Ready | Comment |
-|-----------|-------------------|---------|
-| **Cloudflare** | ✅ Oui | Load balancing global, health checks multi-origin |
-| **APISIX** | ✅ Oui | Déployable sur tout K8s (EKS, GKE, AKS) |
-| **Aiven** | ✅ Oui | PostgreSQL, Kafka, Valkey disponibles sur AWS/GCP/Azure |
-| **ArgoCD** | ✅ Oui | Peut gérer des clusters multi-cloud |
-| **Vault** | ✅ Oui | Réplication cross-datacenter |
-| **OTel** | ✅ Oui | Standard ouvert, backends interchangeables |
-
-**Phases Multi-Cloud :**
-
-| Phase | Scope | Timeline |
-|-------|-------|----------|
-| **Phase 1 (Actuelle)** | AWS uniquement, architecture cloud-agnostic | Now |
-| **Phase 2** | DR sur GCP (read replicas, failover) | +12 mois |
-| **Phase 3** | Active-Active multi-cloud | +24 mois |
-
----
-
-# 🚪 **PARTIE IX.C — API GATEWAY / APIM (Phase Future)**
-
-> **Statut :** À définir ultérieurement. Pour le moment, l'architecture reste simple : Cloudflare → Cilium Gateway → Services.
-
-## **9.6 Options à évaluer (Future)**
-
-| Solution | Type | Coût | Notes |
-|----------|------|------|-------|
-| **AWS API Gateway** | Managed | Pay-per-use | Simple, intégré AWS |
-| **Gravitee CE** | APIM complet | Gratuit | Portal, Subscriptions inclus |
-| **Kong OSS** | Gateway | Gratuit | Populaire, plugins riches |
-| **APISIX** | Gateway | Gratuit | Cloud-native, performant |
-
-**Décision reportée à Phase 2+ selon les besoins :**
-- Si besoin B2B/Partners → APIM (Gravitee)
-- Si juste rate limiting/auth → AWS API Gateway
-- Si multi-cloud requis → APISIX ou Kong
-
-### **Architecture Actuelle (Phase 1 — Simple)**
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    ARCHITECTURE SIMPLIFIÉE — PHASE 1                         │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Internet                                                                    │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ CLOUDFLARE                                                           │    │
-│  │ (DNS, WAF, DDoS, TLS)                                               │    │
-│  └──────────────────────────────┬──────────────────────────────────────┘    │
-│                                 │                                            │
-│                                 │ Tunnel ou Direct                           │
-│                                 ▼                                            │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ AWS EKS — Cilium Gateway API                                         │    │
-│  │ (Routing interne, mTLS)                                              │    │
-│  │                                                                      │    │
-│  │  ┌─────────────────────────────────────────────────────────────┐    │    │
-│  │  │ Services : svc-ledger, svc-wallet, svc-merchant, ...        │    │    │
-│  │  └─────────────────────────────────────────────────────────────┘    │    │
-│  │                                                                      │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  Pas d'API Gateway dédié pour le moment — Cilium Gateway API suffit.       │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-# ⚡ **PARTIE X — RESILIENCE & DR**
-
-## **10.1 Failure Modes**
+### Kiven SaaS Failures
 
 | Failure | Detection | Recovery | RTO |
 |---------|-----------|----------|-----|
-| **Pod crash** | Liveness probe | K8s restart | < 30s |
-| **Node failure** | Node NotReady | Pod reschedule | < 2min |
-| **AZ failure** | Multi-AZ detect | Traffic shift | < 5min |
-| **DB primary failure** | Aiven health | Automatic failover | < 5min |
-| **Kafka broker failure** | Aiven health | Automatic rebalance | < 2min |
-| **Full region failure** | Manual | DR procedure (future) | 4h (target) |
+| Pod crash | Liveness probe | K8s restart | < 30s |
+| Node failure | Node NotReady | Pod reschedule | < 2min |
+| AZ failure | Multi-AZ detect | Traffic shift | < 5min |
+| Product DB failure | Aiven health | Automatic failover | < 5min |
+| Kafka broker failure | Aiven health | Automatic rebalance | < 2min |
+| Full region failure | Manual | DR procedure | 4h (target) |
 
-## **10.2 Backup Strategy**
+### Customer Database Failures (Handled by Kiven)
 
-| Data | Method | Frequency | Retention | Location |
-|------|--------|-----------|-----------|----------|
-| **PostgreSQL** | Aiven automated | Hourly | 7 jours | Aiven (cross-AZ) |
-| **PostgreSQL PITR** | Aiven WAL | Continuous | 24h | Aiven |
-| **Kafka** | Topic retention | N/A | 7 jours | Aiven |
-| **Terraform state** | S3 versioning | Every apply | 90 jours | S3 |
-| **Git repos** | GitHub | Every push | Infini | GitHub |
+| Failure | Detection | Recovery | RTO |
+|---------|-----------|----------|-----|
+| PG pod crash | CNPG + Agent | CNPG automatic restart | < 30s |
+| Primary failure | CNPG failover | Automatic promotion of replica | < 30s |
+| DB node failure | Agent + AWS | Pod reschedule to healthy node | < 2min |
+| EBS volume issue | Agent monitoring | Alert + manual intervention | < 15min |
+| Agent disconnection | SaaS heartbeat | Agent auto-reconnects; DB keeps running | Immediate (DB unaffected) |
+| Backup failure | Agent monitoring | Retry + alert to customer + Kiven ops | < 1h |
+| Data corruption | Backup verification | PITR restore to last good point | < 30min |
 
-## **10.3 Disaster Recovery (Future)**
+## 7.2 Backup Strategy
 
-| Scenario | Current | Future (Multi-region) |
-|----------|---------|----------------------|
-| Single AZ failure | Automatic (multi-AZ) | Automatic |
-| Region failure | Manual restore from backup | Automatic failover |
-| Data corruption | PITR restore | PITR restore |
+### Kiven SaaS
+
+| Data | Method | Frequency | Retention |
+|------|--------|-----------|-----------|
+| Product DB | Aiven automated | Hourly | 7 days |
+| Product DB PITR | Aiven WAL | Continuous | 24h |
+| Kafka | Topic retention | N/A | 7 days |
+| Terraform state | S3 versioning | Every apply | 90 days |
+
+### Customer Databases (Managed by Kiven)
+
+| Data | Method | Frequency | Retention |
+|------|--------|-----------|-----------|
+| PostgreSQL | Barman (CNPG) → S3 | Configurable (default: 6h) | Configurable (default: 30 days) |
+| PostgreSQL PITR | WAL archiving → S3 | Continuous | Configurable (default: 7 days) |
+| Backup verification | Automated restore test | Weekly | Report stored 90 days |
+
+> Detailed documentation: [resilience/DR-GUIDE.md](resilience/DR-GUIDE.md)
 
 ---
 
-# 🛠️ **PARTIE XI — PLATFORM ENGINEERING**
+# PART VIII — PLATFORM CONTRACTS
 
-## **11.1 Platform Contracts**
+## 8.1 Golden Path (New Kiven Service Checklist)
 
-| Contrat | Garantie Platform | Responsabilité Service |
-|---------|-------------------|------------------------|
-| **Deployment** | Git push → Prod < 15min | Manifests K8s valides |
-| **Secrets** | Vault dynamic, rotation auto | Utiliser External-Secrets |
-| **Observability** | Auto-collection traces/metrics/logs | Instrumentation OTel |
-| **Networking** | mTLS enforced, Gateway API | Déclarer routes dans HTTPRoute |
-| **Scaling** | HPA disponible | Configurer requests/limits |
-| **Security** | Policies enforced | Passer les policies |
-
-## **11.2 Golden Path (New Service Checklist)**
-
-| Étape | Action | Validation |
-|-------|--------|------------|
-| 1 | Créer repo depuis template | Structure conforme |
-| 2 | Définir protos dans contracts-proto | buf lint pass |
-| 3 | Implémenter service | Unit tests > 80% |
-| 4 | Configurer K8s manifests | Kyverno policies pass |
-| 5 | Configurer External-Secret | Secrets résolus |
-| 6 | Ajouter ServiceMonitor | Metrics visibles Grafana |
-| 7 | Créer HTTPRoute | Trafic routable |
+| Step | Action | Validation |
+|------|--------|------------|
+| 1 | Create repo from Go service template | Structure compliant |
+| 2 | Define protos in contracts-proto | `buf lint` pass |
+| 3 | Implement service (Go) | Unit tests > 80% |
+| 4 | Configure K8s manifests | Kyverno policies pass |
+| 5 | Configure External-Secret | Secrets resolved from Vault |
+| 6 | Add ServiceMonitor | Metrics visible in Grafana |
+| 7 | Create HTTPRoute or gRPC route | Traffic routable |
 | 8 | PR review | Merge → Auto-deploy dev |
 
-## **11.3 On-Call Structure (5 personnes)**
+## 8.2 SLI/SLO/Error Budgets
 
-| Rôle | Responsabilité | Rotation |
+| Service | SLI | SLO | Error Budget |
+|---------|-----|-----|--------------|
+| **svc-api** | Availability | 99.9% | 43 min/month |
+| **svc-api** | Latency P99 | < 200ms | N/A |
+| **svc-provisioner** | Provisioning success rate | 99.5% | N/A |
+| **svc-agent-relay** | Agent connection uptime | 99.9% | 43 min/month |
+| **Agent** | Metrics delivery | 99.9% | 43 min/month |
+| **Customer DB** | Backup success rate | 99.9% | N/A |
+| **Platform** | Availability | 99.5% | 3.6h/month |
+
+## 8.3 On-Call Structure
+
+| Role | Responsibility | Rotation |
 |------|---------------|----------|
-| **Primary** | First responder, triage | Weekly |
-| **Secondary** | Escalation, expertise | Weekly |
-| **Incident Commander** | Coordination si P1 | On-demand |
+| **Primary** | First responder, triage (SaaS + customer infra) | Weekly |
+| **Secondary** | Escalation, deep expertise | Weekly |
+| **Incident Commander** | Coordination for P1 (customer data at risk) | On-demand |
+
+> Detailed documentation: [platform/PLATFORM-ENGINEERING.md](platform/PLATFORM-ENGINEERING.md)
 
 ---
 
-# 📊 **PARTIE XII — MAPPING TERMINOLOGIE**
+# PART IX — ROADMAP
 
-| Terme | Application concrète Local-Plus |
-|-------|--------------------------------|
-| **Reconciliation loop** | ArgoCD sync, Kyverno background scan |
-| **Desired state store** | Git repos |
-| **Drift detection** | ArgoCD diff, `terraform plan` scheduled |
-| **Blast radius** | Namespace isolation, PDB, Resource Quotas |
-| **Tenant isolation** | Vault policies per service, Network Policies |
-| **Paved road / Golden path** | Template service, checklist onboarding |
-| **Guardrails** | Kyverno policies (not gates) |
-| **Ephemeral credentials** | Vault dynamic DB secrets (TTL) |
-| **SLI/SLO/SLA** | Prometheus recording rules, Error budgets |
-| **Cardinality** | OTel Collector label filtering |
-| **Circuit breaker** | Cilium timeout policies |
-| **Outbox pattern** | svc-ledger → Kafka transactional |
-| **Control plane vs Data plane** | platform-* repos vs svc-* repos |
-| **Progressive delivery** | Argo Rollouts (canary) — future |
-| **Idempotency** | Idempotency-Key header (SYSTEM_CONTRACT.md) |
-| **Pessimistic locking** | SELECT FOR UPDATE (SYSTEM_CONTRACT.md) |
-| **Error budget** | 43 min/mois pour 99.9% SLO |
-| **MTTR** | Target < 15min (RTO) |
-| **Runbook** | docs/runbooks/*.md |
-| **Postmortem** | docs/postmortems/*.md (blameless) |
-| **APM (Application Performance Monitoring)** | Tempo + Pyroscope + Sentry |
-| **Distributed Tracing** | OTel → Tempo, trace_id correlation |
-| **Profiling** | Pyroscope (CPU/Memory flame graphs) |
-| **Cache-aside pattern** | Valkey lookup, DB fallback, cache on miss |
-| **Write-through cache** | Sync write to cache + DB |
-| **Cache invalidation** | TTL + Event-driven (Kafka) + Pub/Sub |
-| **L1/L2 Cache** | L1=In-memory (pod), L2=Valkey (distributed) |
-| **Task Queue** | Dramatiq + Valkey (background jobs) |
-| **Dead Letter Queue (DLQ)** | Failed tasks après max retries |
-| **Exponential Backoff** | Retry avec délai croissant (1s, 2s, 4s...) |
-| **Priority Queue** | critical > high > default > low |
-| **CronJob** | K8s scheduled tasks (batch, cleanup) |
-| **Rate Limiting** | Valkey sliding window counter |
-| **Edge Computing** | Cloudflare Workers, CDN edge nodes |
-| **WAF (Web Application Firewall)** | Cloudflare WAF, OWASP ruleset |
-| **DDoS Protection** | Cloudflare L3/L4/L7 mitigation |
-| **CDN (Content Delivery Network)** | Cloudflare CDN, static asset caching |
-| **TLS Termination** | Cloudflare edge → Origin mTLS |
-| **Zero Trust** | Cloudflare Access, GitHub SSO |
-| **Cloudflare Tunnel** | Secure tunnel, no public origin IP |
-| **API Gateway / APIM** | À définir — Phase future (AWS API Gateway, Gravitee, Kong) |
-| **Bot Score** | Cloudflare bot detection metric |
-| **Origin Certificate** | Cloudflare Origin CA (15-year, free) |
-| **Private Hosted Zone** | Route53 DNS interne (VPC only) |
-| **DNS Failover** | Route53 health checks + backup de Cloudflare |
-| **Multi-Cloud** | Architecture déployable sur AWS/GCP/Azure |
-| **Cloud-Agnostic** | Composants non liés à un provider spécifique |
-| **Cloudflare Tunnel** | Connexion sécurisée sans IP publique origin |
-| **Upstream** | Backend service target dans API Gateway |
-| **Consumer** | Client API avec credentials (JWT, API Key) |
-| **Global Load Balancing** | Cloudflare routing multi-origin/multi-cloud |
+## 9.1 Build Sequence
+
+| Phase | Focus | Duration |
+|-------|-------|----------|
+| **1** | Bootstrap Layer 0-1 (IAM, VPC, EKS) | 3 weeks |
+| **2** | Platform GitOps (Flux) | 1 week |
+| **3** | Platform Networking (Cilium, Gateway API) + Cloudflare | 2 weeks |
+| **4** | Platform Security (Vault, Kyverno) | 2 weeks |
+| **5** | Platform Observability (Prometheus, Loki, Tempo) | 2 weeks |
+| **6** | Agent framework + gRPC protocol + agent-relay | 3 weeks |
+| **7** | CNPG Provider (provider-cnpg) | 2 weeks |
+| **8** | svc-provisioner (THE BRAIN) + svc-infra (AWS resources) | 4 weeks |
+| **9** | svc-clusters + svc-backups + svc-users | 3 weeks |
+| **10** | svc-monitoring + DBA intelligence (basic) | 3 weeks |
+| **11** | Dashboard — Simple Mode (Next.js) | 4 weeks |
+| **12** | Dashboard — Advanced Mode (YAML editor) | 2 weeks |
+| **13** | svc-auth (OIDC, RBAC, org model) | 2 weeks |
+| **14** | CLI + API + Terraform Provider | 3 weeks |
+| **15** | svc-billing (Stripe) + svc-audit | 2 weeks |
+| **16** | svc-migrations (Aiven/RDS import) | 2 weeks |
+| **17** | Testing (E2E, chaos, performance) | 2 weeks |
+| **18** | Compliance audit (GDPR, SOC2) | 2 weeks |
+
+**Total estimated: ~43 weeks (~10 months)**
+
+## 9.2 Pre-Start Checklist
+
+### Accounts & Access
+- [ ] AWS account created, billing configured
+- [ ] Aiven account created (product database)
+- [ ] Cloudflare account created
+- [ ] GitHub organization created
+- [ ] Stripe account created (billing)
+- [ ] DNS domain acquired (kiven.io or similar)
+
+### Decisions Validated
+- [ ] RPO 1h / RTO 15min (SaaS)
+- [ ] AWS eu-west-1
+- [ ] Go as backend language
+- [ ] Next.js as frontend
+- [ ] CNPG as PostgreSQL engine
+- [ ] Agent-based connectivity (gRPC/mTLS)
+- [ ] Cross-account IAM for customer infra access
+- [ ] Provider/plugin architecture for multi-operator future
+- [ ] Aiven for Kiven product DB + Kafka
+- [ ] Flux centralized
+- [ ] Cilium + Gateway API
+- [ ] Kyverno
+- [ ] HashiCorp Vault self-hosted
 
 ---
 
-# 🚀 **PARTIE XIII — SÉQUENCE DE CONSTRUCTION**
+# APPENDIX
 
-| Phase | Focus | Livrables | Estimation |
-|-------|-------|-----------|------------|
-| **1** | Bootstrap Layer 0-1 | IAM, VPC, EKS, Aiven setup (PG, Kafka, Valkey) | 3 semaines |
-| **2** | Platform GitOps | ArgoCD, ApplicationSets | 1 semaine |
-| **3** | Platform Networking | Cilium, Gateway API | 1 semaine |
-| **3b** | Edge & CDN | Cloudflare DNS, WAF, TLS | 1 semaine |
-| **4** | Platform Security | Vault, External-Secrets, Kyverno | 2 semaines |
-| **5** | Platform Observability | OTel, Prometheus, Loki, Tempo, Grafana | 2 semaines |
-| **5b** | Platform APM | Pyroscope, Sentry, APM Dashboards | 1 semaine |
-| **6** | Platform Cache | Valkey setup, SDK integration | 1 semaine |
-| **7** | Contracts | Proto definitions, SDK Python | 1 semaine |
-| **8** | svc-ledger | Migrate ton local-plus, full tests | 3 semaines |
-| **9** | svc-wallet | Second service, gRPC integration | 2 semaines |
-| **10** | Kafka + Outbox | Event-driven patterns | 2 semaines |
-| **10b** | Task Queue | Dramatiq setup, background workers | 1 semaine |
-| **11** | Testing complet | TNR, Perf, Chaos | 2 semaines |
-| **12** | Compliance audit | GDPR, PCI-DSS, SOC2 checks | 2 semaines |
-| **13** | Documentation | Runbooks, ADRs, Onboarding | 1 semaine |
+## A. Glossary
 
-**Total : ~25 semaines**
+> [GLOSSARY.md](GLOSSARY.md)
+
+## B. ADR Index
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| 001 | Landing Zone: Control Tower + Terraform | Accepted |
+| 002 | CNPG as PostgreSQL Engine | Accepted |
+| 003 | Agent-Based Connectivity | Accepted |
+| 004 | Provider/Plugin Architecture | Accepted |
+| ... | ... | ... |
+
+> [adr/](adr/)
+
+## C. Change Management Process
+
+### Architecture Changes
+1. **ADR Required**: Any decision impacting >1 service
+2. **Review**: Platform Team + Tech Lead
+3. **Communication**: Slack #platform-updates
+
+### Breaking Changes
+1. RFC required (`docs/rfc/`)
+2. Migration path documented
+3. Announce 2 sprints before
+
+### Emergency Changes
+1. Incident Commander approval
+2. Post-mortem required
+3. Retroactive ADR within 48h
 
 ---
 
-# ✅ **PARTIE XIV — CHECKLIST FINALE**
+# Documentation Index
 
-## **Avant de commencer :**
+| Document | Description | Path |
+|----------|-------------|------|
+| **Bootstrap Guide** | AWS setup, Account Factory | [bootstrap/BOOTSTRAP-GUIDE.md](bootstrap/BOOTSTRAP-GUIDE.md) |
+| **Security Architecture** | Defense in depth, IAM, cross-account, Vault | [security/SECURITY-ARCHITECTURE.md](security/SECURITY-ARCHITECTURE.md) |
+| **Observability Guide** | Metrics, logs, traces, APM, dashboards | [observability/OBSERVABILITY-GUIDE.md](observability/OBSERVABILITY-GUIDE.md) |
+| **Networking Architecture** | VPC, Cloudflare, Gateway API, customer connectivity | [networking/NETWORKING-ARCHITECTURE.md](networking/NETWORKING-ARCHITECTURE.md) |
+| **Data Architecture** | Product DB, Kafka, customer DB model | [data/DATA-ARCHITECTURE.md](data/DATA-ARCHITECTURE.md) |
+| **Testing Strategy** | Pyramid, E2E, chaos, provisioning tests | [testing/TESTING-STRATEGY.md](testing/TESTING-STRATEGY.md) |
+| **Platform Engineering** | Contracts, Golden Path, on-call, CI/CD | [platform/PLATFORM-ENGINEERING.md](platform/PLATFORM-ENGINEERING.md) |
+| **DR Guide** | Backup, recovery, SaaS DR + customer DB DR | [resilience/DR-GUIDE.md](resilience/DR-GUIDE.md) |
+| **Agent Architecture** | Agent design, gRPC protocol, deployment | [agent/AGENT-ARCHITECTURE.md](agent/AGENT-ARCHITECTURE.md) |
+| **Customer Infra Management** | Nodes, storage, S3, IAM, cross-account | [infra/CUSTOMER-INFRA-MANAGEMENT.md](infra/CUSTOMER-INFRA-MANAGEMENT.md) |
+| **Customer Onboarding** | Terraform module, EKS discovery, provisioning | [onboarding/CUSTOMER-ONBOARDING.md](onboarding/CUSTOMER-ONBOARDING.md) |
+| **Provider Interface** | Plugin architecture, Go interface, adding providers | [providers/PROVIDER-INTERFACE.md](providers/PROVIDER-INTERFACE.md) |
+| **Glossary** | All terminology | [GLOSSARY.md](GLOSSARY.md) |
 
-- [ ] Compte AWS créé, billing configuré
-- [ ] Compte Aiven créé
-- [ ] Compte Cloudflare créé (Free tier)
-- [ ] Organisation GitHub créée
-- [ ] Décision : HashiCorp Vault self-hosted sur EKS
-- [ ] Domaine DNS acquis et transféré vers Cloudflare
+---
 
-## **Décisions architecturales validées :**
-
-- [ ] RPO 1h, RTO 15min — OK
-- [ ] AWS eu-west-1 — OK
-- [ ] Aiven pour Kafka + PostgreSQL + Valkey — OK
-- [ ] Cloudflare pour DNS + WAF + CDN — OK
-- [ ] API Gateway / APIM — À définir (Phase future)
-- [ ] Self-hosted observability — OK
-- [ ] ArgoCD centralisé — OK
-- [ ] Cilium + Gateway API — OK
-- [ ] Kyverno — OK
-- [ ] GDPR + PCI-DSS + SOC2 — OK
+*Maintained by: Kiven Platform Team*
+*Last updated: February 2026*
